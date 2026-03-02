@@ -9,8 +9,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application code
 COPY . .
 
-# If your Flask app listens on a different port, change this
-EXPOSE 5000
+# Cloud Run provides PORT (default 8080); app uses it
+EXPOSE 8080
 
 # Environment variables for Flask apps (adjust if needed)
 ENV FLASK_APP=main.py
