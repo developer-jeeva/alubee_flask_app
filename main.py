@@ -7,12 +7,20 @@ from flask_login import (
     login_required,
     current_user,
 )
+from datetime import date, timedelta
 from google.cloud import bigquery
 from google.oauth2 import service_account
 import os
 import secrets
 
 import auth
+
+# Hardcoded filter options for Machine Dashboard (labels shown in UI)
+UNIT_OPTIONS = ["Unit I", "Unit II"]
+SHIFT_OPTIONS = ["Shift I", "Shift II"]
+DEPARTMENT_OPTIONS = ["PDC", "CNC"]
+
+# Pass filter values to BigQuery as-is (table uses "Unit I", "Shift I", etc.)
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "change-this-to-a-random-secret-key-in-production"
@@ -41,6 +49,22 @@ def _init_bigquery_client():
 
 
 bq_client = _init_bigquery_client()
+
+
+def _get_max_date_machine_idle():
+    """Return the latest Date in fact_machine_idle, or None on error."""
+    if bq_client is None:
+        return None
+    try:
+        job = bq_client.query(
+            "SELECT MAX(Date) AS max_date FROM `alubee_production_marts.fact_machine_idle`"
+        )
+        row = next(job.result(), None)
+        if row and row.max_date:
+            return row.max_date.strftime("%Y-%m-%d")
+    except Exception as e:
+        app.logger.warning("BigQuery max date: %s", e)
+    return None
 
 
 def fetch_machine_idle_rows(date_str=None, shift=None, unit=None, department=None):
@@ -92,10 +116,12 @@ def fetch_machine_idle_rows(date_str=None, shift=None, unit=None, department=Non
 
     try:
         result = bq_client.query(query, job_config=job_config).result()
-    except Exception:
+        rows = [dict(row) for row in result]
+        app.logger.info("Machine idle: date=%s unit=%s shift=%s dept=%s -> %d rows", date_str, unit, shift, department, len(rows))
+        return rows
+    except Exception as e:
+        app.logger.warning("BigQuery machine idle query failed: %s", e)
         return []
-
-    return [dict(row) for row in result]
 
 
 def fetch_machine_idle_filter_values():
@@ -190,12 +216,12 @@ def inject_nav_permissions():
 def index():
     require_page("production")
 
-    selected_date = request.args.get("dateFilter") or None
+    # Default date to yesterday when not provided
+    yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+    selected_date = request.args.get("dateFilter") or yesterday
     selected_shift = request.args.get("shiftSlicer") or "All"
     selected_unit = request.args.get("unitSlicer") or "All"
     selected_department = request.args.get("departmentSlicer") or "All"
-
-    filter_values = fetch_machine_idle_filter_values()
 
     machine_rows = fetch_machine_idle_rows(
         date_str=selected_date,
@@ -204,6 +230,18 @@ def index():
         department=selected_department,
     )
 
+    # If no rows for chosen date (e.g. data is in 2026, yesterday is 2025), use latest date in table
+    if not machine_rows and selected_date == yesterday:
+        max_date = _get_max_date_machine_idle()
+        if max_date and max_date != selected_date:
+            selected_date = max_date
+            machine_rows = fetch_machine_idle_rows(
+                date_str=selected_date,
+                shift=selected_shift,
+                unit=selected_unit,
+                department=selected_department,
+            )
+
     return render_template(
         "index.html",
         machine_rows=machine_rows,
@@ -211,9 +249,9 @@ def index():
         selected_shift=selected_shift,
         selected_unit=selected_unit,
         selected_department=selected_department,
-        shift_options=filter_values["shifts"],
-        unit_options=filter_values["units"],
-        department_options=filter_values["departments"],
+        shift_options=SHIFT_OPTIONS,
+        unit_options=UNIT_OPTIONS,
+        department_options=DEPARTMENT_OPTIONS,
         active_nav="production",
     )
 
@@ -386,5 +424,4 @@ if __name__ == "__main__":
         )
         conn.commit()
         conn.close()
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(debug=True)

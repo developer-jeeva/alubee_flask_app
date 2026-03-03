@@ -168,7 +168,7 @@
 											<div class="row gx-2 justify-content-between align-items-center">
 												<div class="col-auto">
 													<img class="profile-image"
-														src="assets/images/profiles/profile-2.png" alt="">
+														src="{{ url_for('static', filename='assets/images/profiles/profile-2.png') }}" alt="">
 												</div><!--//col-->
 												<div class="col">
 													<div class="info">
@@ -678,7 +678,7 @@
 				<!-- App -->
 				<script src="{{ url_for('static', filename='assets/js/app.js') }}"></script>
 
-				<!-- Default Date Picker to Today -->
+				<!-- Filter form: auto-submit on change (no default date so all dates can show) -->
 				<script>
 					document.addEventListener('DOMContentLoaded', function () {
 						const form = document.getElementById('global-filter-form');
@@ -687,11 +687,7 @@
 						const unitSlicer = document.getElementById('unitSlicer');
 						const departmentSlicer = document.getElementById('departmentSlicer');
 
-						// Set default date to today only if not already selected
-						if (dateFilter && !dateFilter.value) {
-							const today = new Date().toISOString().split('T')[0];
-							dateFilter.value = today;
-						}
+						// Do not set default date – when date is empty, backend returns all dates (e.g. 20-02-2026 to 02-03-2026). User can pick a date to filter.
 
 						// Auto-submit on any filter change
 						if (form) {
