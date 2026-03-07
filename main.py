@@ -14,19 +14,37 @@ except ImportError:
     ZoneInfo = None  # Python < 3.9
 from google.cloud import bigquery
 from google.oauth2 import service_account
-import io
 import os
 import re
 import secrets
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import auth
+
+# Simple TTL cache for expensive read-only BigQuery results (key -> (expiry_ts, value))
+_cache_ttl_sec = 60
+_cache_store = {}
+
+
+def _cache_get(key):
+    if key not in _cache_store:
+        return None
+    exp, val = _cache_store[key]
+    if time.monotonic() < exp:
+        return val
+    del _cache_store[key]
+    return None
+
+
+def _cache_set(key, value, ttl_sec=None):
+    ttl_sec = ttl_sec or _cache_ttl_sec
+    _cache_store[key] = (time.monotonic() + ttl_sec, value)
 
 # Hardcoded filter options for Machine Dashboard (labels shown in UI)
 UNIT_OPTIONS = ["Unit I", "Unit II"]
 SHIFT_OPTIONS = ["Shift I", "Shift II"]
 DEPARTMENT_OPTIONS = ["PDC", "CNC"]
-
-# Pass filter values to BigQuery as-is (table uses "Unit I", "Shift I", etc.)
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or "change-this-to-a-random-secret-key-in-production"
@@ -66,25 +84,37 @@ bq_client = _init_bigquery_client()
 
 
 def _get_max_date_machine_idle():
-    """Return the latest Date in fact_machine_idle, or None on error."""
+    """Return the latest Date in fact_machine_idle, or None on error. Cached briefly."""
     if bq_client is None:
         return None
+    cache_key = ("max_date_machine_idle",)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     try:
         job = bq_client.query(
             "SELECT MAX(Date) AS max_date FROM `alubee_production_marts.fact_machine_idle`"
         )
         row = next(job.result(), None)
         if row and row.max_date:
-            return row.max_date.strftime("%Y-%m-%d")
+            out = row.max_date.strftime("%Y-%m-%d")
+        else:
+            out = None
+        _cache_set(cache_key, out, ttl_sec=120)
+        return out
     except Exception as e:
         app.logger.warning("BigQuery max date: %s", e)
-    return None
+        return None
 
 
 def fetch_machine_idle_rows(date_str=None, shift=None, unit=None, department=None):
-    """Fetch machine idle rows from BigQuery with optional filters."""
+    """Fetch machine idle rows from BigQuery with optional filters. Results cached briefly."""
     if bq_client is None:
         return []
+    cache_key = ("machine_idle", date_str, shift, unit, department)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
 
     query = """
         SELECT
@@ -132,41 +162,11 @@ def fetch_machine_idle_rows(date_str=None, shift=None, unit=None, department=Non
         result = bq_client.query(query, job_config=job_config).result()
         rows = [dict(row) for row in result]
         app.logger.info("Machine idle: date=%s unit=%s shift=%s dept=%s -> %d rows", date_str, unit, shift, department, len(rows))
+        _cache_set(cache_key, rows)
         return rows
     except Exception as e:
         app.logger.warning("BigQuery machine idle query failed: %s", e)
         return []
-
-
-def fetch_machine_idle_filter_values():
-    """Return distinct Shift, Unit, department values from BigQuery for filters."""
-    if bq_client is None:
-        return {"shifts": [], "units": [], "departments": []}
-
-    def _simple_list(sql, field):
-        try:
-            rows = bq_client.query(sql).result()
-            return [r[field] for r in rows if r[field] is not None]
-        except Exception:
-            return []
-
-    shifts = _simple_list(
-        "SELECT DISTINCT Shift FROM `alubee_production_marts.fact_machine_idle` "
-        "WHERE Shift IS NOT NULL ORDER BY Shift",
-        "Shift",
-    )
-    units = _simple_list(
-        "SELECT DISTINCT Unit FROM `alubee_production_marts.fact_machine_idle` "
-        "WHERE Unit IS NOT NULL ORDER BY Unit",
-        "Unit",
-    )
-    departments = _simple_list(
-        "SELECT DISTINCT department FROM `alubee_production_marts.fact_machine_idle` "
-        "WHERE department IS NOT NULL ORDER BY department",
-        "department",
-    )
-
-    return {"shifts": shifts, "units": units, "departments": departments}
 
 
 class User(UserMixin):
@@ -313,7 +313,6 @@ def realtime():
 
 PARTS_TABLE = "alubee-prod.alubee_production_marts.dim_component_mapper"
 MONTHLY_PLANNER_TABLE = "alubee-prod.alubee_production_marts.dim_monthly_planner"
-MACHINE_MAPPER_TABLE = "alubee-prod.alubee_production_marts.dim_machine_mapper"
 JOB_ALLOCATOR_TABLE = "alubee-prod.alubee_production_marts.fact_job_allocator"
 
 
@@ -455,24 +454,6 @@ def _get_plan_by_id(plan_id: int):
     except Exception as e:
         app.logger.warning("BigQuery _get_plan_by_id failed: %s", e)
         return None
-
-
-def fetch_machine_units():
-    """Fetch distinct unit values from fact_job_allocator for Job Allocator slicer."""
-    if bq_client is None:
-        return []
-    query = f"""
-        SELECT DISTINCT unit
-        FROM `{JOB_ALLOCATOR_TABLE}`
-        WHERE unit IS NOT NULL
-        ORDER BY unit
-    """
-    try:
-        result = bq_client.query(query).result()
-        return [row["unit"] for row in result]
-    except Exception as e:
-        app.logger.warning("BigQuery fetch_machine_units failed: %s", e)
-        return []
 
 
 def fetch_machines(department: str | None = None, unit: str | None = None):
@@ -731,19 +712,66 @@ def ppc():
     if filter_department_raw in allowed_departments:
         filter_department = filter_department_raw
 
-    parts_all = fetch_parts()  # unfiltered for monthly planner cycle_time_sec
-    # Map part_no -> cycle_time_sec from Part Manager for shift calculations
+    # Daily planner and Part Manager filter args (needed for parallel fetches)
+    daily_dept_raw = (request.args.get("daily_dept") or "PDC").strip().upper()
+    daily_unit_raw = request.args.get("daily_unit") or "Unit I"
+    daily_filter_department = "PDC"
+    if daily_dept_raw in allowed_departments:
+        daily_filter_department = daily_dept_raw
+    allowed_units = ("Unit I", "Unit II")
+    daily_filter_unit = "Unit I"
+    if daily_unit_raw in allowed_units:
+        daily_filter_unit = daily_unit_raw
+
+    part_dept_raw = (request.args.get("part_dept") or "PDC").strip().upper()
+    part_filter_department = part_dept_raw if part_dept_raw in allowed_departments else "PDC"
+    part_page = max(1, int(request.args.get("part_page") or 1))
+    part_per_page = min(100, max(5, int(request.args.get("part_per_page") or 10)))
+
+    # Run independent BigQuery fetches in parallel (7 calls)
+    results = {}
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {
+            executor.submit(fetch_parts): "parts_all",
+            executor.submit(fetch_monthly_planner, plan_month_filter, filter_department): "monthly_plans",
+            executor.submit(fetch_machines, daily_filter_department or None, daily_filter_unit): "daily_machines",
+            executor.submit(fetch_job_allocations, daily_filter_department or None, daily_filter_unit): "job_allocations",
+            executor.submit(fetch_parts_count, part_filter_department): "parts_count",
+            executor.submit(fetch_parts, filter_department, None, 0): "monthly_planner_parts_dropdown",
+            executor.submit(fetch_parts, part_filter_department, None, 0): "parts_for_dropdown",
+        }
+        for fut in as_completed(futures):
+            name = futures[fut]
+            try:
+                results[name] = fut.result()
+            except Exception as e:
+                app.logger.warning("ppc parallel fetch %s failed: %s", name, e)
+                results[name] = [] if name != "parts_count" else 0
+
+    parts_all = results.get("parts_all") or []
+    monthly_plans = results.get("monthly_plans") or []
+    daily_machines = results.get("daily_machines") or []
+    job_allocations = results.get("job_allocations") or []
+    parts_count = results.get("parts_count") or 0
+    monthly_planner_parts_dropdown = results.get("monthly_planner_parts_dropdown") or []
+    parts_for_dropdown = results.get("parts_for_dropdown") or []
+
+    part_total_pages = max(1, (parts_count + part_per_page - 1) // part_per_page)
+    part_page = min(part_page, part_total_pages)
+    parts = fetch_parts(
+        department=part_filter_department,
+        limit=part_per_page,
+        offset=(part_page - 1) * part_per_page,
+    )
+
+    # Map part_no -> cycle_time_sec for shift calculations
     part_cycle_map: dict[str, int] = {}
     for part in parts_all:
         pn = (part.get("part_no") or "").strip()
-        if not pn:
-            continue
-        part_cycle_map[pn] = part.get("cycle_time_sec") or 0
+        if pn:
+            part_cycle_map[pn] = part.get("cycle_time_sec") or 0
 
-    monthly_plans = fetch_monthly_planner(plan_month_filter, filter_department)
-    # Distinct part_no, part_name from monthly planner for Job Allocator Part No dropdown,
-    # including schedule/allocated and cycle_time_sec so we can enforce plan <= schedule - allocated
-    # and compute shift required.
+    # Distinct part_no, part_name from monthly planner for Job Allocator dropdown
     seen_part = set()
     monthly_planner_parts = []
     for p in monthly_plans:
@@ -770,46 +798,6 @@ def ppc():
                 "cycle_time_sec": cycle_time_sec,
             }
         )
-
-    # Daily planner: Unit I/II toggle + department slicer, machines table
-    daily_dept_raw = (request.args.get("daily_dept") or "PDC").strip().upper()
-    daily_unit_raw = request.args.get("daily_unit") or "Unit I"
-
-    daily_filter_department = "PDC"
-    if daily_dept_raw in allowed_departments:
-        daily_filter_department = daily_dept_raw
-
-    allowed_units = ("Unit I", "Unit II")
-    daily_filter_unit = "Unit I"
-    if daily_unit_raw in allowed_units:
-        daily_filter_unit = daily_unit_raw
-
-    daily_machines = fetch_machines(
-        department=daily_filter_department or None,
-        unit=daily_filter_unit,
-    )
-    job_allocations = fetch_job_allocations(
-        department=daily_filter_department or None,
-        unit=daily_filter_unit,
-    )
-
-    # Part Manager: department filter and pagination
-    part_dept_raw = (request.args.get("part_dept") or "PDC").strip().upper()
-    part_filter_department = part_dept_raw if part_dept_raw in allowed_departments else "PDC"
-    part_page = max(1, int(request.args.get("part_page") or 1))
-    part_per_page = min(100, max(5, int(request.args.get("part_per_page") or 10)))
-    parts_count = fetch_parts_count(department=part_filter_department)
-    part_total_pages = max(1, (parts_count + part_per_page - 1) // part_per_page)
-    part_page = min(part_page, part_total_pages)
-    parts = fetch_parts(
-        department=part_filter_department,
-        limit=part_per_page,
-        offset=(part_page - 1) * part_per_page,
-    )
-    # All parts for Add Monthly Plan dropdown: filtered by Monthly Planner department (e.g. PDC filter → only PDC parts)
-    monthly_planner_parts_dropdown = fetch_parts(department=filter_department, limit=None, offset=0)
-    # Part Manager tab dropdown uses its own department filter
-    parts_for_dropdown = fetch_parts(department=part_filter_department, limit=None, offset=0)
 
     # Part numbers that already have a monthly plan for the current filter month (user can only edit those)
     existing_plan_part_nos = [p.get("part_no") for p in monthly_plans if p.get("part_no")]
@@ -1393,20 +1381,6 @@ def _normalize_part_name(name: str) -> str:
     """Uppercase part name and enforce only A-Z and hyphen."""
     raw = (name or "").strip().upper()
     return raw
-
-
-def _compute_qty_per_hour(cycle_time_sec: int, components_in_fixture: int = 1) -> int:
-    """Qty per hour = (3600 / cycle_time_sec) * components_in_fixture."""
-    try:
-        ct = int(cycle_time_sec)
-        comp = int(components_in_fixture)
-    except (TypeError, ValueError):
-        return 0
-    if ct <= 0:
-        return 0
-    if comp <= 0:
-        comp = 1
-    return (3600 * comp) // ct
 
 
 @app.route("/ppc/parts", methods=["POST"])
