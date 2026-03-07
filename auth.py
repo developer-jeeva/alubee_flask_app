@@ -13,6 +13,7 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "instance", "app.db")
 # Page keys used for viewer permissions (must match route names / active_nav)
 PAGE_KEYS = [
     ("production", "Production"),
+    ("ppc", "PPC"),
     ("realtime", "Realtime"),
     ("consumables", "Consumables"),
     ("maintenance", "Maintenance"),

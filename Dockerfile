@@ -1,22 +1,18 @@
+# Production Dockerfile for Cloud Run (no service account key file in image)
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install Python dependencies
+# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code
+# Application code (bq_service_acc.json excluded via .dockerignore)
 COPY . .
 
-# Cloud Run provides PORT (default 8080); app uses it
+# Cloud Run sets PORT (default 8080)
+ENV PORT=8080
 EXPOSE 8080
 
-# Environment variables for Flask apps (adjust if needed)
-ENV FLASK_APP=main.py
-ENV FLASK_RUN_HOST=0.0.0.0
-ENV PYTHONUNBUFFERED=1
-
-# If your entry file is not main.py, change it here
-CMD ["python", "main.py"]
-
+# Run with gunicorn for production
+CMD exec gunicorn --bind :${PORT} --workers 1 --threads 8 --timeout 0 main:app

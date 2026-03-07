@@ -1,0 +1,125 @@
+{% extends "index.html" %}
+
+{% block content %}
+<div class="app-content pt-3 p-md-3 p-lg-4">
+  <div class="container-xl">
+    <div class="row g-3 mb-3 align-items-center justify-content-between">
+      <div class="col-auto">
+        <h1 class="app-page-title mb-0">Edit Part</h1>
+      </div>
+      <div class="col-auto">
+        <a href="{{ url_for('ppc') }}#part-tab-pane" class="btn btn-sm btn-secondary">Back to Part Manager</a>
+      </div>
+    </div>
+
+    <div class="row g-4">
+      <div class="col-12 col-lg-8">
+        <div class="app-card app-card-settings shadow-sm p-4">
+          <div class="app-card-body">
+            <form method="post" action="{{ url_for('ppc_edit_part', part_no=part.part_no) }}">
+              <div class="row g-3">
+                <div class="col-md-6">
+                  <label for="part_no" class="form-label">Part No</label>
+                  <input type="text" class="form-control" id="part_no" name="part_no" value="{{ part.part_no }}" required>
+                </div>
+                <div class="col-md-6">
+                  <label for="part_department" class="form-label">Department</label>
+                  <select class="form-select" id="part_department" name="department" required>
+                    <option value="">Select...</option>
+                    <option value="PDC" {% if part.department == 'PDC' %}selected{% endif %}>PDC</option>
+                    <option value="FETTLING" {% if part.department in ('FETTLING', 'FET') %}selected{% endif %}>FETTLING</option>
+                    <option value="CNC" {% if part.department == 'CNC' %}selected{% endif %}>CNC</option>
+                  </select>
+                </div>
+                <div class="col-md-6">
+                  <label for="part_name" class="form-label">Part Name</label>
+                  <input
+                    type="text"
+                    class="form-control"
+                    id="part_name"
+                    name="part_name"
+                    value="{{ part.part_name }}"
+                    required
+                    pattern="[A-Z0-9-]+"
+                    title="Use only capital letters, numbers, and hyphens; no spaces."
+                  >
+                </div>
+                <div class="col-md-4">
+                  <label for="components_in_fixture" class="form-label">Component in Fixture (Nos)</label>
+                  <input
+                    type="number"
+                    class="form-control"
+                    id="components_in_fixture"
+                    name="components_in_fixture"
+                    min="1"
+                    step="1"
+                    value="{{ part.components_in_fixture }}"
+                    required
+                  >
+                </div>
+                <div class="col-md-4">
+                  <label for="cycle_time_sec" class="form-label">Cycle Time (Second)</label>
+                  <input
+                    type="number"
+                    class="form-control"
+                    id="cycle_time_sec"
+                    name="cycle_time_sec"
+                    min="1"
+                    step="1"
+                    value="{{ part.cycle_time_sec }}"
+                    required
+                  >
+                </div>
+                <div class="col-md-4">
+                  <label for="qty_per_hour" class="form-label">Qty/Hour (Nos)</label>
+                  <input
+                    type="number"
+                    class="form-control"
+                    id="qty_per_hour"
+                    name="qty_per_hour"
+                    value="{{ part.qty_per_hour }}"
+                    readonly
+                  >
+                </div>
+              </div>
+
+              <div class="mt-4">
+                <button type="submit" class="btn btn-primary">Save Changes</button>
+                <a href="{{ url_for('ppc') }}#part-tab-pane" class="btn btn-secondary ms-2">Cancel</a>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const cycleInput = document.getElementById('cycle_time_sec');
+    const compInput = document.getElementById('components_in_fixture');
+    const qtyInput = document.getElementById('qty_per_hour');
+
+    function recalcQty() {
+      const cycle = parseInt(cycleInput && cycleInput.value, 10);
+      const comp = parseInt(compInput && compInput.value, 10);
+      if (!isNaN(cycle) && cycle > 0 && !isNaN(comp) && comp > 0) {
+        qtyInput.value = Math.floor((3600 / cycle) * comp);
+      } else {
+        qtyInput.value = '';
+      }
+    }
+
+    if (cycleInput && compInput && qtyInput) {
+      cycleInput.addEventListener('input', recalcQty);
+      compInput.addEventListener('input', recalcQty);
+      recalcQty();
+      var form = qtyInput.closest('form');
+      if (form) form.addEventListener('submit', function () { recalcQty(); });
+    }
+  });
+</script>
+{% endblock %}
+

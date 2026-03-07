@@ -1,0 +1,30 @@
+# Do not ship credentials; Cloud Run uses Application Default Credentials
+bq_service_acc.json
+*service*acc*.json
+*credentials*.json
+
+# Git and IDE
+.git
+.gitignore
+.dockerignore
+*.md
+!AUTH_README.md
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.venv
+venv
+env
+.pytest_cache
+.mypy_cache
+.coverage
+htmlcov
+
+# Local / dev
+.env
+.env.*
+*.log
+.DS_Store

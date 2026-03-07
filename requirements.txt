@@ -1,8 +1,10 @@
-pandas
-streamlit
-plotly 
-google-cloud-bigquery 
-pyarrow 
-db-dtypes
+# App & auth (auth.py uses werkzeug.security)
 flask
 flask-login
+werkzeug
+
+# BigQuery (main.py: google.cloud.bigquery, google.oauth2.service_account)
+google-cloud-bigquery
+
+# Production server
+gunicorn

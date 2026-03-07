@@ -1,0 +1,25 @@
+# Do not upload credentials to Cloud Build / Cloud Run
+bq_service_acc.json
+*service*acc*.json
+*credentials*.json
+
+.git
+.gitignore
+.dockerignore
+.gcloudignore
+*.md
+!AUTH_README.md
+
+__pycache__
+.venv
+venv
+env
+*.pyc
+.pytest_cache
+.mypy_cache
+.coverage
+htmlcov
+.env
+.env.*
+*.log
+.DS_Store

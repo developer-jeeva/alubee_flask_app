@@ -1,0 +1,116 @@
+{% extends "index.html" %}
+
+{% block content %}
+<div class="app-content pt-3 p-md-3 p-lg-4">
+  <div class="container-xl">
+    <div class="row g-3 mb-3 align-items-center justify-content-between">
+      <div class="col-auto">
+        <h1 class="app-page-title mb-0">Edit Monthly Plan</h1>
+      </div>
+      <div class="col-auto">
+        <a href="{{ url_for('ppc') }}#monthly-tab-pane" class="btn btn-sm btn-secondary">Back to Monthly Planner</a>
+      </div>
+    </div>
+
+    <div class="row g-4">
+      <div class="col-12 col-lg-8">
+        <div class="app-card app-card-settings shadow-sm p-4">
+          <div class="app-card-body">
+            <form method="post" action="{{ url_for('ppc_edit_monthly_plan', plan_id=plan.plan_id) }}" id="edit-monthly-plan-form">
+              <div class="row g-3">
+                <div class="col-md-3">
+                  <label class="form-label">Plan ID</label>
+                  <input type="text" class="form-control" value="{{ plan.plan_id }}" disabled>
+                </div>
+                <div class="col-md-6">
+                  <label for="part_id" class="form-label">Part</label>
+                  <select class="form-select" id="part_id" name="part_id" required>
+                    <option value="">Select part</option>
+                    {% for p in parts %}
+                    <option value="{{ p.id }}" {% if current_part_id is not none and p.id == current_part_id %}selected{% endif %}>{{ p.part_no }} - {{ p.part_name }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="col-md-3">
+                  <label for="department" class="form-label">Department</label>
+                  <select class="form-select" id="department" name="department" required>
+                    <option value="PDC" {% if plan.department == 'PDC' %}selected{% endif %}>PDC</option>
+                    <option value="FETTLING" {% if plan.department in ('FETTLING', 'FET') %}selected{% endif %}>FETTLING</option>
+                    <option value="CNC" {% if plan.department == 'CNC' %}selected{% endif %}>CNC</option>
+                  </select>
+                </div>
+                {% set year_val = plan.plan_month[:4] %}
+                {% set month_val = plan.plan_month[5:7] %}
+                <div class="col-md-3">
+                  <label for="year" class="form-label">Year</label>
+                  <input type="number" class="form-control" id="year" name="year" min="2000" max="2100" value="{{ year_val }}" required>
+                </div>
+                <div class="col-md-3">
+                  <label for="month" class="form-label">Month</label>
+                  <select class="form-select" id="month" name="month" required>
+                    <option value="1" {% if month_val == '01' %}selected{% endif %}>Jan</option>
+                    <option value="2" {% if month_val == '02' %}selected{% endif %}>Feb</option>
+                    <option value="3" {% if month_val == '03' %}selected{% endif %}>Mar</option>
+                    <option value="4" {% if month_val == '04' %}selected{% endif %}>Apr</option>
+                    <option value="5" {% if month_val == '05' %}selected{% endif %}>May</option>
+                    <option value="6" {% if month_val == '06' %}selected{% endif %}>Jun</option>
+                    <option value="7" {% if month_val == '07' %}selected{% endif %}>Jul</option>
+                    <option value="8" {% if month_val == '08' %}selected{% endif %}>Aug</option>
+                    <option value="9" {% if month_val == '09' %}selected{% endif %}>Sep</option>
+                    <option value="10" {% if month_val == '10' %}selected{% endif %}>Oct</option>
+                    <option value="11" {% if month_val == '11' %}selected{% endif %}>Nov</option>
+                    <option value="12" {% if month_val == '12' %}selected{% endif %}>Dec</option>
+                  </select>
+                </div>
+                <div class="col-md-3">
+                  <label for="schedule" class="form-label">Schedule</label>
+                  <input type="number" class="form-control" id="schedule" name="schedule" min="0" step="1" value="{{ plan.schedule }}" required>
+                </div>
+                <div class="col-md-3">
+                  <label for="opening_qty" class="form-label">Opening Qty</label>
+                  <input type="number" class="form-control" id="opening_qty" name="opening_qty" min="0" step="1" value="{{ plan.opening_qty }}" required>
+                </div>
+                <div class="col-md-3">
+                  <label for="balance" class="form-label">Balance</label>
+                  <input type="number" class="form-control" id="balance" readonly value="{{ plan.balance_to_be_produced }}" aria-label="Balance (Schedule − Opening Qty)">
+                </div>
+                <div class="col-md-3">
+                  <label for="priority" class="form-label">Priority</label>
+                  <select class="form-select" id="priority" name="priority" required>
+                    <option value="1st" {% if plan.priority == '1st' %}selected{% endif %}>1st</option>
+                    <option value="2nd" {% if plan.priority == '2nd' %}selected{% endif %}>2nd</option>
+                    <option value="3rd" {% if plan.priority == '3rd' %}selected{% endif %}>3rd</option>
+                  </select>
+                </div>
+                <div class="col-12">
+                  <small class="text-muted">Allocated: {{ plan.allocated }} (not changed on edit)</small>
+                </div>
+              </div>
+
+              <div class="mt-4">
+                <button type="submit" class="btn btn-primary">Save Changes</button>
+                <a href="{{ url_for('ppc') }}#monthly-tab-pane" class="btn btn-secondary ms-2">Cancel</a>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var schedule = document.getElementById('schedule');
+  var openingQty = document.getElementById('opening_qty');
+  var balance = document.getElementById('balance');
+  function updateBalance() {
+    var s = parseInt(schedule.value, 10) || 0;
+    var o = parseInt(openingQty.value, 10) || 0;
+    balance.value = Math.max(0, s - o);
+  }
+  if (schedule) schedule.addEventListener('input', updateBalance);
+  if (openingQty) openingQty.addEventListener('input', updateBalance);
+})();
+</script>
+{% endblock %}

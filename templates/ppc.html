@@ -1,0 +1,859 @@
+{% extends "index.html" %}
+
+{% block content %}
+<div class="app-content pt-3 p-md-3 p-lg-4">
+  <div class="container-xl">
+
+    <ul class="nav nav-tabs mb-3" id="ppcTabs" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="monthly-tab" data-bs-toggle="tab" data-bs-target="#monthly-tab-pane" type="button" role="tab" aria-controls="monthly-tab-pane" aria-selected="true">
+          Monthly Planner
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="daily-tab" data-bs-toggle="tab" data-bs-target="#daily-tab-pane" type="button" role="tab" aria-controls="daily-tab-pane" aria-selected="false">
+          Job Allocator
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="part-tab" data-bs-toggle="tab" data-bs-target="#part-tab-pane" type="button" role="tab" aria-controls="part-tab-pane" aria-selected="false">
+          Part Manager
+        </button>
+      </li>
+    </ul>
+
+    <div class="tab-content" id="ppcTabsContent">
+      <div class="tab-pane fade show active" id="monthly-tab-pane" role="tabpanel" aria-labelledby="monthly-tab" tabindex="0">
+        <div class="mb-3">
+          <div class="btn-group btn-group-sm" role="group" aria-label="Department filter">
+            <a
+              class="btn {% if filter_department == 'PDC' %}btn-primary{% else %}btn-outline-primary{% endif %}"
+              href="{{ url_for('ppc', department='PDC', year=filter_year, month=filter_month) }}#monthly-tab-pane"
+            >PDC</a>
+            <a
+              class="btn {% if filter_department == 'FETTLING' %}btn-primary{% else %}btn-outline-primary{% endif %}"
+              href="{{ url_for('ppc', department='FETTLING', year=filter_year, month=filter_month) }}#monthly-tab-pane"
+            >FETTLING</a>
+            <a
+              class="btn {% if filter_department == 'CNC' %}btn-primary{% else %}btn-outline-primary{% endif %}"
+              href="{{ url_for('ppc', department='CNC', year=filter_year, month=filter_month) }}#monthly-tab-pane"
+            >CNC</a>
+          </div>
+        </div>
+        <!-- Add Plan modal trigger will live in the filter row; modal defined at bottom -->
+        <div class="app-card app-card-settings shadow-sm">
+          <div class="app-card-body p-0">
+            <div class="p-3 border-bottom">
+              <form method="get" action="{{ url_for('ppc') }}#monthly-tab-pane" class="row g-2 align-items-end">
+                <div class="col-sm-3 col-md-2">
+                  <label for="filter_year" class="form-label mb-0">Year</label>
+                  <input
+                    type="number"
+                    class="form-control"
+                    id="filter_year"
+                    name="year"
+                    min="2000"
+                    max="2100"
+                    value="{{ filter_year or '' }}"
+                    placeholder="YYYY"
+                  >
+                </div>
+                <div class="col-sm-3 col-md-2">
+                  <label for="filter_month" class="form-label mb-0">Month</label>
+                  <select class="form-select" id="filter_month" name="month">
+                    <option value="">All</option>
+                    <option value="1"  {% if filter_month == '1' %}selected{% endif %}>Jan</option>
+                    <option value="2"  {% if filter_month == '2' %}selected{% endif %}>Feb</option>
+                    <option value="3"  {% if filter_month == '3' %}selected{% endif %}>Mar</option>
+                    <option value="4"  {% if filter_month == '4' %}selected{% endif %}>Apr</option>
+                    <option value="5"  {% if filter_month == '5' %}selected{% endif %}>May</option>
+                    <option value="6"  {% if filter_month == '6' %}selected{% endif %}>Jun</option>
+                    <option value="7"  {% if filter_month == '7' %}selected{% endif %}>Jul</option>
+                    <option value="8"  {% if filter_month == '8' %}selected{% endif %}>Aug</option>
+                    <option value="9"  {% if filter_month == '9' %}selected{% endif %}>Sep</option>
+                    <option value="10" {% if filter_month == '10' %}selected{% endif %}>Oct</option>
+                    <option value="11" {% if filter_month == '11' %}selected{% endif %}>Nov</option>
+                    <option value="12" {% if filter_month == '12' %}selected{% endif %}>Dec</option>
+                  </select>
+                </div>
+                <div class="col-sm-auto d-flex gap-2 mt-3 mt-sm-0">
+                  <button type="submit" class="btn btn-primary btn-sm" aria-label="Apply filters">
+                    <svg width="1em" height="1em" viewBox="0 0 16 16" class="bi bi-funnel" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M1.5 1.5A.5.5 0 0 1 2 1h12a.5.5 0 0 1 .39.812L10 7.21V13.5a.5.5 0 0 1-.79.407l-2-1.5A.5.5 0 0 1 7 12.5V7.21L1.61 1.812A.5.5 0 0 1 1.5 1.5z"/>
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-outline-primary btn-sm"
+                    data-bs-toggle="modal"
+                    data-bs-target="#monthlyPlannerModal"
+                    aria-label="Add plan"
+                  >
+                    <svg width="1em" height="1em" viewBox="0 0 16 16" class="bi bi-plus-lg" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                      <path fill-rule="evenodd" d="M8 2a.5.5 0 0 1 .5.5v5h5a.5.5 0 0 1 0 1h-5v5a.5.5 0 0 1-1 0v-5h-5a.5.5 0 0 1 0-1h5v-5A.5.5 0 0 1 8 2z"/>
+                    </svg>
+                  </button>
+                  <button type="button" id="monthly_edit_btn" class="btn btn-outline-secondary btn-sm" disabled aria-label="Edit selected plan">
+                    <svg width="1em" height="1em" viewBox="0 0 16 16" class="bi bi-pencil" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-9.5 9.5a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168z"/>
+                      <path d="M11.207 2.5 3 10.707V13h2.293L13.5 4.793z"/>
+                    </svg>
+                  </button>
+                  <button type="button" id="monthly_delete_btn" class="btn btn-outline-danger btn-sm" disabled aria-label="Delete selected plan(s)">
+                    <svg width="1em" height="1em" viewBox="0 0 16 16" class="bi bi-trash" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0A.5.5 0 0 1 9 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/>
+                      <path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/>
+                    </svg>
+                  </button>
+                </div>
+              </form>
+            </div>
+            <div class="table-responsive">
+              <table class="table mb-0 table-striped table-bordered align-middle">
+                <thead class="table-light">
+                  <tr>
+                    <th class="cell text-center" style="width: 40px;">
+                      <input type="checkbox" class="form-check-input" id="monthly_select_all">
+                    </th>
+                    <th class="cell">Month</th>
+                    <th class="cell">Part No</th>
+                    <th class="cell">Part Name</th>
+                    <th class="cell text-center">Schedule</th>
+                    <th class="cell text-center">Opening Qty</th>
+                    <th class="cell text-center">Balance</th>
+                    <th class="cell text-center">Priority</th>
+                    <th class="cell text-center">Allocated</th>
+                    <th class="cell text-center">Produced</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% if monthly_plans %}
+                    {% for row in monthly_plans %}
+                    <tr>
+                      <td class="cell text-center">
+                        <input
+                          type="checkbox"
+                          class="form-check-input monthly-plan-select"
+                          value="{{ row.plan_id }}"
+                        >
+                      </td>
+                      <td class="cell">{{ row.month }}</td>
+                      <td class="cell">{{ row.part_no }}</td>
+                      <td class="cell">{{ row.part_name }}</td>
+                      <td class="cell text-center">{{ row.schedule }}</td>
+                      <td class="cell text-center">{{ row.opening_qty }}</td>
+                      <td class="cell text-center">{{ row.balance_to_be_produced }}</td>
+                      <td class="cell text-center">{{ row.priority }}</td>
+                      <td class="cell text-center">{{ row.allocated or 0 }}</td>
+                      <td class="cell text-center">{{ row.produced or 0 }}</td>
+                    </tr>
+                    {% endfor %}
+                  {% else %}
+                    <tr>
+                      <td class="cell text-center" colspan="11">No plans yet. Add one using the form above.</td>
+                    </tr>
+                  {% endif %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-pane fade" id="daily-tab-pane" role="tabpanel" aria-labelledby="daily-tab" tabindex="0">
+        <div class="d-flex align-items-end flex-wrap gap-3 mb-3">
+          <div class="btn-group btn-group-sm" role="group" aria-label="Unit">
+            <a
+              class="btn {% if daily_filter_unit == 'Unit I' %}btn-primary{% else %}btn-outline-primary{% endif %}"
+              href="{{ url_for('ppc', department=filter_department, year=filter_year, month=filter_month, daily_dept=daily_filter_department, daily_unit='Unit I') }}#daily-tab-pane"
+            >Unit I</a>
+            <a
+              class="btn {% if daily_filter_unit == 'Unit II' %}btn-primary{% else %}btn-outline-primary{% endif %}"
+              href="{{ url_for('ppc', department=filter_department, year=filter_year, month=filter_month, daily_dept=daily_filter_department, daily_unit='Unit II') }}#daily-tab-pane"
+            >Unit II</a>
+          </div>
+          <div class="me-2" style="width: 1.5rem;"></div>
+          <div class="btn-group btn-group-sm" role="group" aria-label="Department filter">
+            <a
+              class="btn {% if daily_filter_department == 'PDC' %}btn-primary{% else %}btn-outline-primary{% endif %}"
+              href="{{ url_for('ppc', department=filter_department, year=filter_year, month=filter_month, daily_dept='PDC', daily_unit=daily_filter_unit) }}#daily-tab-pane"
+            >PDC</a>
+            <a
+              class="btn {% if daily_filter_department == 'FETTLING' %}btn-primary{% else %}btn-outline-primary{% endif %}"
+              href="{{ url_for('ppc', department=filter_department, year=filter_year, month=filter_month, daily_dept='FETTLING', daily_unit=daily_filter_unit) }}#daily-tab-pane"
+            >FETTLING</a>
+            <a
+              class="btn {% if daily_filter_department == 'CNC' %}btn-primary{% else %}btn-outline-primary{% endif %}"
+              href="{{ url_for('ppc', department=filter_department, year=filter_year, month=filter_month, daily_dept='CNC', daily_unit=daily_filter_unit) }}#daily-tab-pane"
+            >CNC</a>
+          </div>
+        </div>
+        <div class="app-card app-card-settings shadow-sm">
+          <div class="app-card-body p-0">
+            <div class="table-responsive">
+              <table class="table mb-0 table-striped table-bordered align-middle" id="job-allocator-table">
+                <thead class="table-light">
+                  <tr>
+                    <th class="cell">Machine No</th>
+                    <th class="cell">Part No</th>
+                    <th class="cell">Plan</th>
+                    <th class="cell">Produced</th>
+                    <th class="cell">Allocated Shift</th>
+                    <th class="cell">Consumed Shift</th>
+                    <th class="cell">Job Created At</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% if job_allocations %}
+                    {% for row in job_allocations %}
+                    <tr>
+                      <td class="cell job-allocator-machine-cell" role="button" tabindex="0"
+                          data-machine-no="{{ row.get('machine_no') or '' }}"
+                          data-part-no="{{ row.get('part_no') or '' }}"
+                          data-plan="{{ row.get('plan') if row.get('plan') is not none else '' }}"
+                          title="Click to update plan">
+                        {{ row.get('machine_no') if row.get('machine_no') is not none and row.get('machine_no') != '' else '-' }}
+                      </td>
+                      <td class="cell">{{ row.get('part_no') if row.get('part_no') is not none and row.get('part_no') != '' else '-' }}</td>
+                      <td class="cell">{{ row.get('plan') if row.get('plan') is not none else '-' }}</td>
+                      <td class="cell">{{ row.get('produced') if row.get('produced') is not none else '-' }}</td>
+                      <td class="cell">{{ row.get('shift_allocated') if row.get('shift_allocated') is not none else '-' }}</td>
+                      <td class="cell">{{ row.get('consumed_shift') if row.get('consumed_shift') is not none else '-' }}</td>
+                      <td class="cell">{{ row.get('job_created_at') if row.get('job_created_at') is not none and row.get('job_created_at') != '' else '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                  {% else %}
+                    <tr>
+                      <td class="cell text-center" colspan="7">No job allocations.</td>
+                    </tr>
+                  {% endif %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-pane fade" id="part-tab-pane" role="tabpanel" aria-labelledby="part-tab" tabindex="0">
+        <div class="row g-4">
+          <div class="col-12">
+            <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+              <div class="d-flex align-items-center gap-2">
+                <a class="btn btn-sm {% if part_filter_department == 'PDC' %}btn-primary{% else %}btn-outline-primary{% endif %}" href="{{ url_for('ppc', department=filter_department, year=filter_year, month=filter_month, daily_dept=daily_filter_department, daily_unit=daily_filter_unit, part_dept='PDC') }}#part-tab-pane">PDC</a>
+                <a class="btn btn-sm {% if part_filter_department == 'FETTLING' %}btn-primary{% else %}btn-outline-primary{% endif %}" href="{{ url_for('ppc', department=filter_department, year=filter_year, month=filter_month, daily_dept=daily_filter_department, daily_unit=daily_filter_unit, part_dept='FETTLING') }}#part-tab-pane">FETTLING</a>
+                <a class="btn btn-sm {% if part_filter_department == 'CNC' %}btn-primary{% else %}btn-outline-primary{% endif %}" href="{{ url_for('ppc', department=filter_department, year=filter_year, month=filter_month, daily_dept=daily_filter_department, daily_unit=daily_filter_unit, part_dept='CNC') }}#part-tab-pane">CNC</a>
+              </div>
+              <div class="d-flex gap-2">
+                <button class="btn btn-primary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#addPartForm" aria-expanded="false" aria-controls="addPartForm">
+                  Add Part
+                </button>
+              </div>
+            </div>
+
+            <div class="collapse mb-3" id="addPartForm">
+              <div class="app-card app-card-settings shadow-sm p-4">
+                <div class="app-card-body">
+                  <form method="post" action="{{ url_for('ppc_create_part') }}#part-tab-pane">
+                    <div class="row g-3">
+                      <div class="col-md-4">
+                        <label for="part_no" class="form-label">Part No</label>
+                        <input type="text" class="form-control" id="part_no" name="part_no" required>
+                      </div>
+                      <div class="col-md-4">
+                        <label for="part_department" class="form-label">Department</label>
+                        <select class="form-select" id="part_department" name="department" required>
+                          <option value="">Select...</option>
+                          <option value="PDC">PDC</option>
+                          <option value="FETTLING">FETTLING</option>
+                          <option value="CNC">CNC</option>
+                        </select>
+                      </div>
+                      <div class="col-md-4">
+                        <label for="part_name" class="form-label">Part Name</label>
+                        <input
+                          type="text"
+                          class="form-control"
+                          id="part_name"
+                          name="part_name"
+                          required
+                          pattern="[A-Z0-9-]+"
+                          title="Use only capital letters, numbers, and hyphens; no spaces."
+                        >
+                      </div>
+                      <div class="col-md-4">
+                        <label for="components_in_fixture" class="form-label">Component in Fixture (Nos)</label>
+                        <input
+                          type="number"
+                          class="form-control"
+                          id="components_in_fixture"
+                          name="components_in_fixture"
+                          min="1"
+                          step="1"
+                          required
+                        >
+                      </div>
+                      <div class="col-md-4">
+                        <label for="cycle_time_sec" class="form-label">Cycle Time (Second)</label>
+                        <input
+                          type="number"
+                          class="form-control"
+                          id="cycle_time_sec"
+                          name="cycle_time_sec"
+                          min="1"
+                          step="1"
+                          required
+                        >
+                      </div>
+                      <div class="col-md-4">
+                        <label for="qty_per_hour" class="form-label">Qty/Hour (Nos)</label>
+                        <input
+                          type="number"
+                          class="form-control"
+                          id="qty_per_hour"
+                          name="qty_per_hour"
+                          readonly
+                        >
+                      </div>
+                    </div>
+                    <div class="mt-3">
+                      <button type="submit" class="btn btn-primary">Save Part</button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+
+            <div class="app-card app-card-settings shadow-sm">
+              <div class="app-card-body p-0">
+                <div class="table-responsive">
+                  <table class="table mb-0 table-striped table-bordered align-middle">
+                    <thead class="table-light">
+                      <tr>
+                        <th class="cell">Part No</th>
+                        <th class="cell">Part Name</th>
+                        <th class="cell">Department</th>
+                        <th class="cell text-center">Cycle Time</th>
+                        <th class="cell text-center">Qty/Hour</th>
+                        <th class="cell text-center">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% if parts %}
+                        {% for p in parts %}
+                        <tr>
+                          <td class="cell">{{ p.part_no }}</td>
+                          <td class="cell">{{ p.part_name }}</td>
+                          <td class="cell">{{ p.department|default('', true) }}</td>
+                          <td class="cell text-center">{{ p.cycle_time_sec }}</td>
+                          <td class="cell text-center">{{ p.qty_per_hour }}</td>
+                          <td class="cell text-center">
+                            <a href="{{ url_for('ppc_edit_part', part_no=p.part_no) }}" class="btn btn-sm btn-outline-secondary">Edit</a>
+                            <form method="post" action="{{ url_for('ppc_delete_part', part_no=p.part_no) }}#part-tab-pane" class="d-inline">
+                              <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete this part?');">Delete</button>
+                            </form>
+                          </td>
+                        </tr>
+                        {% endfor %}
+                      {% else %}
+                        <tr>
+                          <td class="cell text-center" colspan="6">No parts defined yet.</td>
+                        </tr>
+                      {% endif %}
+                    </tbody>
+                  </table>
+                </div>
+                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 p-3 border-top">
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="text-muted small">Show</span>
+                    <select class="form-select form-select-sm w-auto" id="part_per_page_select" aria-label="Rows per page">
+                      <option value="5"  {% if part_per_page == 5 %}selected{% endif %}>5</option>
+                      <option value="10" {% if part_per_page == 10 %}selected{% endif %}>10</option>
+                      <option value="25" {% if part_per_page == 25 %}selected{% endif %}>25</option>
+                      <option value="50" {% if part_per_page == 50 %}selected{% endif %}>50</option>
+                      <option value="100" {% if part_per_page == 100 %}selected{% endif %}>100</option>
+                    </select>
+                    <span class="text-muted small">per page</span>
+                  </div>
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="small text-muted">
+                      {% if parts_count > 0 %}
+                        {% set range_end = part_page * part_per_page %}
+                        {{ ((part_page - 1) * part_per_page) + 1 }}–{% if range_end > parts_count %}{{ parts_count }}{% else %}{{ range_end }}{% endif %} of {{ parts_count }}
+                      {% else %}
+                        0 of 0
+                      {% endif %}
+                    </span>
+                    <a class="btn btn-sm btn-outline-secondary {% if part_page <= 1 %}disabled{% endif %}" href="{{ url_for('ppc', department=filter_department, year=filter_year, month=filter_month, daily_dept=daily_filter_department, daily_unit=daily_filter_unit, part_dept=part_filter_department, part_page=part_page - 1, part_per_page=part_per_page) }}#part-tab-pane" aria-label="Previous page">Previous</a>
+                    <span class="small">Page {{ part_page }} of {{ part_total_pages }}</span>
+                    <a class="btn btn-sm btn-outline-secondary {% if part_page >= part_total_pages %}disabled{% endif %}" href="{{ url_for('ppc', department=filter_department, year=filter_year, month=filter_month, daily_dept=daily_filter_department, daily_unit=daily_filter_unit, part_dept=part_filter_department, part_page=part_page + 1, part_per_page=part_per_page) }}#part-tab-pane" aria-label="Next page">Next</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Add Monthly Plan Modal -->
+<div class="modal fade" id="monthlyPlannerModal" tabindex="-1" aria-labelledby="monthlyPlannerModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="monthlyPlannerModalLabel">Add Monthly Plan</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form method="post" action="{{ url_for('ppc_monthly_planner_add') }}#monthly-tab-pane" id="monthly-planner-form">
+        <div class="modal-body">
+          <div class="row g-3">
+            <div class="col-md-4">
+              <label for="monthly_part_search" class="form-label">Part</label>
+              <div class="position-relative" id="monthly-part-combobox-wrap">
+                <input type="text" class="form-control" id="monthly_part_search" autocomplete="off" placeholder="Search or select part..." aria-label="Search part">
+                <input type="hidden" id="monthly_part_id" name="part_id" value="">
+                <div class="list-group position-absolute top-100 start-0 end-0 mt-1 shadow-sm border rounded overflow-auto d-none" id="monthly_part_dropdown" style="max-height: 220px; z-index: 1060;"></div>
+              </div>
+              <small class="text-muted">{{ filter_department or 'PDC' }} parts only. Type to search; select from list. Parts that already have a plan for this month are hidden.</small>
+            </div>
+            <div class="col-md-2">
+              <label for="monthly_year" class="form-label">Year</label>
+              <input
+                type="number"
+                class="form-control"
+                id="monthly_year"
+                name="year"
+                min="2000"
+                max="2100"
+                placeholder="YYYY"
+                value="{{ default_year }}"
+                required
+              >
+            </div>
+            <div class="col-md-2">
+              <label for="monthly_month" class="form-label">Month</label>
+              <select class="form-select" id="monthly_month" name="month" required>
+                <option value="">Select</option>
+                <option value="1"  {% if default_month == 1 %}selected{% endif %}>Jan</option>
+                <option value="2"  {% if default_month == 2 %}selected{% endif %}>Feb</option>
+                <option value="3"  {% if default_month == 3 %}selected{% endif %}>Mar</option>
+                <option value="4"  {% if default_month == 4 %}selected{% endif %}>Apr</option>
+                <option value="5"  {% if default_month == 5 %}selected{% endif %}>May</option>
+                <option value="6"  {% if default_month == 6 %}selected{% endif %}>Jun</option>
+                <option value="7"  {% if default_month == 7 %}selected{% endif %}>Jul</option>
+                <option value="8"  {% if default_month == 8 %}selected{% endif %}>Aug</option>
+                <option value="9"  {% if default_month == 9 %}selected{% endif %}>Sep</option>
+                <option value="10" {% if default_month == 10 %}selected{% endif %}>Oct</option>
+                <option value="11" {% if default_month == 11 %}selected{% endif %}>Nov</option>
+                <option value="12" {% if default_month == 12 %}selected{% endif %}>Dec</option>
+              </select>
+            </div>
+            <input type="hidden" name="department" value="{{ filter_department or 'PDC' }}">
+            <div class="col-md-2">
+              <label for="monthly_schedule" class="form-label">Schedule</label>
+              <input type="number" class="form-control" id="monthly_schedule" name="schedule" min="0" step="1" placeholder="0" required>
+            </div>
+            <div class="col-md-2">
+              <label for="monthly_opening_qty" class="form-label">Opening Qty</label>
+              <input type="number" class="form-control" id="monthly_opening_qty" name="opening_qty" min="0" step="1" placeholder="0" required>
+            </div>
+            <div class="col-md-2">
+              <label for="monthly_balance" class="form-label">Balance</label>
+              <input type="number" class="form-control" id="monthly_balance" readonly placeholder="0" aria-label="Balance (Schedule − Opening Qty)">
+            </div>
+            <div class="col-md-2">
+              <label for="monthly_priority" class="form-label">Priority</label>
+              <select class="form-select" id="monthly_priority" name="priority" required>
+                <option value="">Select</option>
+                <option value="1st">1st</option>
+                <option value="2nd">2nd</option>
+                <option value="3rd">3rd</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary btn-sm">Add plan</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Update Plan (Job Allocator) Modal -->
+<div class="modal fade" id="updatePlanModal" tabindex="-1" aria-labelledby="updatePlanModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="updatePlanModalLabel">Update Plan</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form method="post" action="{{ url_for('ppc_job_allocator_update_plan') }}#daily-tab-pane" id="update-plan-form">
+        <input type="hidden" name="machine_no" id="update_plan_machine_no_input" value="">
+        <input type="hidden" name="daily_dept" value="{{ daily_filter_department or 'PDC' }}">
+        <input type="hidden" name="daily_unit" value="{{ daily_filter_unit or 'Unit I' }}">
+        <input type="hidden" name="plan_year" value="{{ filter_year }}">
+        <input type="hidden" name="plan_month" value="{{ filter_month }}">
+        <div class="modal-body">
+          <div class="row g-2 mb-3">
+            <div class="col-6">
+              <label for="update_plan_year_display" class="form-label">Year</label>
+              <input
+                type="number"
+                class="form-control"
+                id="update_plan_year_display"
+                value="{{ filter_year }}"
+                disabled
+              >
+            </div>
+            <div class="col-6">
+              <label for="update_plan_month_display" class="form-label">Month</label>
+              <select class="form-select" id="update_plan_month_display" disabled>
+                <option value="1"  {% if filter_month|string == '1'  %}selected{% endif %}>Jan</option>
+                <option value="2"  {% if filter_month|string == '2'  %}selected{% endif %}>Feb</option>
+                <option value="3"  {% if filter_month|string == '3'  %}selected{% endif %}>Mar</option>
+                <option value="4"  {% if filter_month|string == '4'  %}selected{% endif %}>Apr</option>
+                <option value="5"  {% if filter_month|string == '5'  %}selected{% endif %}>May</option>
+                <option value="6"  {% if filter_month|string == '6'  %}selected{% endif %}>Jun</option>
+                <option value="7"  {% if filter_month|string == '7'  %}selected{% endif %}>Jul</option>
+                <option value="8"  {% if filter_month|string == '8'  %}selected{% endif %}>Aug</option>
+                <option value="9"  {% if filter_month|string == '9'  %}selected{% endif %}>Sep</option>
+                <option value="10" {% if filter_month|string == '10' %}selected{% endif %}>Oct</option>
+                <option value="11" {% if filter_month|string == '11' %}selected{% endif %}>Nov</option>
+                <option value="12" {% if filter_month|string == '12' %}selected{% endif %}>Dec</option>
+              </select>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label text-muted">Machine No</label>
+            <p class="form-control-plaintext fw-medium" id="update_plan_machine_no">-</p>
+          </div>
+          <div class="mb-3">
+            <label for="update_plan_part_no" class="form-label">Part No</label>
+            <select class="form-select" id="update_plan_part_no" name="part_no" required>
+              <option value="">Select part</option>
+              {% for p in monthly_planner_parts %}
+              <option
+                value="{{ p.part_no }}"
+                data-remaining="{{ p.remaining|default(0, true) }}"
+                data-cycle="{{ p.cycle_time_sec|default(0, true) }}"
+              >
+                {{ p.part_no }}{% if p.part_name %} - {{ p.part_name }}{% endif %}
+              </option>
+              {% endfor %}
+            </select>
+            <small class="text-muted">From Monthly Planner</small>
+          </div>
+          <div class="mb-3">
+            <label for="update_plan_plan" class="form-label">Plan <span class="text-danger">*</span></label>
+            <input type="number" class="form-control" id="update_plan_plan" name="plan" min="0" step="1" required>
+            <small class="text-muted d-block mt-1">
+              Max allowed (schedule − allocated):
+              <span id="update_plan_max_value">-</span>
+            </small>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary btn-sm">Update</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    // Job Allocator: helper to enforce max plan (schedule - allocated)
+    var partSelectEl = document.getElementById('update_plan_part_no');
+    var planInputEl = document.getElementById('update_plan_plan');
+    var maxSpanEl = document.getElementById('update_plan_max_value');
+
+    function updatePlanStateFromPartAndPlan() {
+      if (!partSelectEl || !planInputEl) return;
+      var opt = partSelectEl.options[partSelectEl.selectedIndex];
+      var maxVal = 0;
+      if (opt) {
+        var attr = opt.getAttribute('data-remaining');
+        maxVal = parseInt(attr, 10);
+        if (!Number.isFinite(maxVal) || maxVal < 0) {
+          maxVal = 0;
+        }
+      }
+      if (maxVal > 0) {
+        planInputEl.max = String(maxVal);
+      } else {
+        planInputEl.removeAttribute('max');
+      }
+      if (maxSpanEl) {
+        maxSpanEl.textContent = maxVal > 0 ? String(maxVal) : '-';
+      }
+      var v = parseFloat(planInputEl.value || '0');
+      if (Number.isFinite(v) && maxVal > 0 && v > maxVal) {
+        v = maxVal;
+        planInputEl.value = String(maxVal);
+      }
+    }
+
+    if (partSelectEl) {
+      partSelectEl.addEventListener('change', updatePlanStateFromPartAndPlan);
+    }
+    if (planInputEl) {
+      planInputEl.addEventListener('input', function () {
+        updatePlanStateFromPartAndPlan();
+      });
+    }
+
+    // Job Allocator: click machine_no to open Update Plan modal
+    document.querySelectorAll('.job-allocator-machine-cell').forEach(function (el) {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', function () {
+        var machineNo = this.getAttribute('data-machine-no') || '';
+        if (!machineNo) {
+          alert('This row does not have a valid machine number.');
+          return;
+        }
+        var partNo = this.getAttribute('data-part-no') || '';
+        var plan = this.getAttribute('data-plan') || '';
+        document.getElementById('update_plan_machine_no_input').value = machineNo;
+        document.getElementById('update_plan_machine_no').textContent = machineNo;
+        if (partSelectEl) {
+          partSelectEl.value = partNo || '';
+        }
+        if (planInputEl) {
+          planInputEl.value = plan;
+        }
+        updatePlanStateFromPartAndPlan();
+        var modal = new bootstrap.Modal(document.getElementById('updatePlanModal'));
+        modal.show();
+      });
+    });
+
+    // Stay on correct tab when URL has hash (e.g. after filter or redirect)
+    var hash = window.location.hash;
+    if (hash === '#daily-tab-pane') {
+      var dailyTab = document.getElementById('daily-tab');
+      if (dailyTab && typeof bootstrap !== 'undefined') {
+        bootstrap.Tab.getOrCreateInstance(dailyTab).show();
+      }
+    } else if (hash === '#part-tab-pane') {
+      var partTab = document.getElementById('part-tab');
+      if (partTab && typeof bootstrap !== 'undefined') {
+        bootstrap.Tab.getOrCreateInstance(partTab).show();
+      }
+    }
+
+    var cycleInput = document.getElementById('cycle_time_sec');
+    var compInput = document.getElementById('components_in_fixture');
+    var qtyInput = document.getElementById('qty_per_hour');
+
+    function recalcQty() {
+      var cycle = parseInt(cycleInput && cycleInput.value, 10);
+      var comp = parseInt(compInput && compInput.value, 10);
+      if (!isNaN(cycle) && cycle > 0 && !isNaN(comp) && comp > 0) {
+        qtyInput.value = Math.floor((3600 / cycle) * comp);
+      } else {
+        qtyInput.value = '';
+      }
+    }
+
+    if (cycleInput && compInput && qtyInput) {
+      cycleInput.addEventListener('input', recalcQty);
+      compInput.addEventListener('input', recalcQty);
+      var addPartForm = qtyInput.closest('form');
+      if (addPartForm) addPartForm.addEventListener('submit', function () { recalcQty(); });
+    }
+
+    // Part Manager: changing "per page" goes to page 1 with new size
+    var partPerPageSelect = document.getElementById('part_per_page_select');
+    if (partPerPageSelect) {
+      partPerPageSelect.addEventListener('change', function () {
+        var params = new URLSearchParams(window.location.search);
+        params.set('part_per_page', this.value);
+        params.set('part_page', '1');
+        window.location.href = window.location.pathname + '?' + params.toString() + '#part-tab-pane';
+      });
+    }
+
+    // Monthly planner: Balance to be Produced = Schedule − Opening Qty
+    var monthlySchedule = document.getElementById('monthly_schedule');
+    var monthlyOpeningQty = document.getElementById('monthly_opening_qty');
+    var monthlyBalance = document.getElementById('monthly_balance');
+    function recalcMonthlyBalance() {
+      var s = parseInt(monthlySchedule && monthlySchedule.value, 10);
+      var o = parseInt(monthlyOpeningQty && monthlyOpeningQty.value, 10);
+      if (monthlyBalance) {
+        if (!isNaN(s) && !isNaN(o)) {
+          monthlyBalance.value = s - o;
+        } else {
+          monthlyBalance.value = '';
+        }
+      }
+    }
+    if (monthlySchedule) monthlySchedule.addEventListener('input', recalcMonthlyBalance);
+    if (monthlyOpeningQty) monthlyOpeningQty.addEventListener('input', recalcMonthlyBalance);
+
+    // Monthly planner Add form: searchable Part dropdown
+    var monthlyPlannerAddPartsOptions = {{ monthly_planner_add_parts|tojson }};
+    var monthlyPartSearch = document.getElementById('monthly_part_search');
+    var monthlyPartId = document.getElementById('monthly_part_id');
+    var monthlyPartDropdown = document.getElementById('monthly_part_dropdown');
+
+    function monthlyPartFilter(q) {
+      var lower = (q || '').toLowerCase();
+      return monthlyPlannerAddPartsOptions.filter(function (p) {
+        var no = (p.part_no || '').toLowerCase();
+        var name = (p.part_name || '').toLowerCase();
+        return no.indexOf(lower) !== -1 || name.indexOf(lower) !== -1;
+      });
+    }
+
+    function monthlyPartRenderList(parts) {
+      if (!monthlyPartDropdown) return;
+      monthlyPartDropdown.innerHTML = '';
+      if (parts.length === 0) {
+        monthlyPartDropdown.classList.add('d-none');
+        return;
+      }
+      parts.forEach(function (p) {
+        var label = (p.part_no || '') + (p.part_name ? ' - ' + p.part_name : '');
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'list-group-item list-group-item-action list-group-item-light border-0 text-start';
+        btn.textContent = label;
+        btn.dataset.id = p.id || p.part_no;
+        btn.dataset.label = label;
+        monthlyPartDropdown.appendChild(btn);
+      });
+      monthlyPartDropdown.classList.remove('d-none');
+    }
+
+    function monthlyPartSelect(id, label) {
+      if (monthlyPartId) monthlyPartId.value = id || '';
+      if (monthlyPartSearch) monthlyPartSearch.value = label || '';
+      if (monthlyPartDropdown) monthlyPartDropdown.classList.add('d-none');
+    }
+
+    if (monthlyPartSearch && monthlyPartDropdown && monthlyPartId) {
+      monthlyPartSearch.addEventListener('focus', function () {
+        var q = this.value.trim();
+        monthlyPartRenderList(q ? monthlyPartFilter(q) : monthlyPlannerAddPartsOptions);
+      });
+      monthlyPartSearch.addEventListener('input', function () {
+        monthlyPartRenderList(monthlyPartFilter(this.value));
+        monthlyPartId.value = '';
+      });
+      monthlyPartSearch.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') {
+          monthlyPartDropdown.classList.add('d-none');
+        }
+      });
+      monthlyPartDropdown.addEventListener('click', function (e) {
+        var btn = e.target.closest('button[data-id]');
+        if (btn) monthlyPartSelect(btn.dataset.id, btn.dataset.label);
+      });
+      document.addEventListener('click', function (e) {
+        var wrap = document.getElementById('monthly-part-combobox-wrap');
+        if (wrap && !wrap.contains(e.target)) monthlyPartDropdown.classList.add('d-none');
+      });
+    }
+
+    var monthlyPlannerModalEl = document.getElementById('monthlyPlannerModal');
+    if (monthlyPlannerModalEl) {
+      monthlyPlannerModalEl.addEventListener('show.bs.modal', function () {
+        monthlyPartSelect('', '');
+        if (monthlyPartSearch) monthlyPartSearch.placeholder = 'Search or select part...';
+      });
+    }
+
+    var monthlyPlannerForm = document.getElementById('monthly-planner-form');
+    if (monthlyPlannerForm) {
+      monthlyPlannerForm.addEventListener('submit', function (e) {
+        if (!monthlyPartId || !monthlyPartId.value.trim()) {
+          e.preventDefault();
+          alert('Please search and select a part from the list.');
+          if (monthlyPartSearch) monthlyPartSearch.focus();
+          return false;
+        }
+      });
+    }
+
+    // Monthly planner: bulk edit/delete using checkboxes
+    function getSelectedPlanIds() {
+      var checkboxes = document.querySelectorAll('.monthly-plan-select');
+      var ids = [];
+      checkboxes.forEach(function (cb) {
+        if (cb.checked) {
+          ids.push(cb.value);
+        }
+      });
+      return ids;
+    }
+
+    var selectAll = document.getElementById('monthly_select_all');
+    var editBtn = document.getElementById('monthly_edit_btn');
+    var deleteBtn = document.getElementById('monthly_delete_btn');
+
+    function updateActionButtonsVisibility() {
+      var ids = getSelectedPlanIds();
+      if (editBtn) editBtn.disabled = ids.length !== 1;
+      if (deleteBtn) deleteBtn.disabled = ids.length === 0;
+    }
+    if (selectAll) {
+      selectAll.addEventListener('change', function () {
+        var checkboxes = document.querySelectorAll('.monthly-plan-select');
+        checkboxes.forEach(function (cb) {
+          cb.checked = selectAll.checked;
+        });
+        updateActionButtonsVisibility();
+      });
+    }
+
+    // When any row checkbox changes, update action button visibility
+    var rowCheckboxes = document.querySelectorAll('.monthly-plan-select');
+    rowCheckboxes.forEach(function (cb) {
+      cb.addEventListener('change', updateActionButtonsVisibility);
+    });
+
+    if (editBtn) {
+      editBtn.addEventListener('click', function () {
+        var ids = getSelectedPlanIds();
+        if (ids.length !== 1) {
+          alert('Please select exactly one plan to edit.');
+          return;
+        }
+        var planId = ids[0];
+        window.location.href = '/ppc/monthly-planner/' + planId + '/edit';
+      });
+    }
+
+    if (deleteBtn) {
+      deleteBtn.addEventListener('click', function () {
+        var ids = getSelectedPlanIds();
+        if (ids.length === 0) {
+          alert('Please select at least one plan to delete.');
+          return;
+        }
+        var msg = ids.length === 1 ? 'Delete selected plan?' : 'Delete ' + ids.length + ' selected plans?';
+        if (!confirm(msg)) return;
+        var form = document.createElement('form');
+        form.method = 'post';
+        form.action = '/ppc/monthly-planner/delete#monthly-tab-pane';
+        ids.forEach(function (id) {
+          var input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'plan_ids';
+          input.value = id;
+          form.appendChild(input);
+        });
+        document.body.appendChild(form);
+        form.submit();
+      });
+    }
+  });
+</script>
+{% endblock %}
+

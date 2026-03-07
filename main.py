@@ -7,10 +7,16 @@ from flask_login import (
     login_required,
     current_user,
 )
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None  # Python < 3.9
 from google.cloud import bigquery
 from google.oauth2 import service_account
+import io
 import os
+import re
 import secrets
 
 import auth
@@ -23,7 +29,7 @@ DEPARTMENT_OPTIONS = ["PDC", "CNC"]
 # Pass filter values to BigQuery as-is (table uses "Unit I", "Shift I", etc.)
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = "change-this-to-a-random-secret-key-in-production"
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or "change-this-to-a-random-secret-key-in-production"
 
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
@@ -34,16 +40,24 @@ PAGE_KEYS = [p[0] for p in auth.PAGE_KEYS]
 
 
 def _init_bigquery_client():
-    """Initialise BigQuery client using the service account JSON in the project root.
+    """Initialise BigQuery client. No service account file in this folder.
 
+    - If BQ_CREDENTIALS_PATH is set and the file exists, use it (e.g. local dev with a key elsewhere).
+    - Otherwise use Application Default Credentials (ADC). On Cloud Run this uses the
+      service account attached to the Cloud Run service; no key file required.
     Returns None if credentials are missing or invalid so the app can still run.
     """
-    sa_path = os.path.join(os.path.dirname(__file__), "bq_service_acc.json")
-    if not os.path.exists(sa_path):
-        return None
+    creds_path = os.environ.get("BQ_CREDENTIALS_PATH")
+    if creds_path and os.path.isfile(creds_path):
+        try:
+            credentials = service_account.Credentials.from_service_account_file(creds_path)
+            return bigquery.Client(credentials=credentials, project=credentials.project_id)
+        except Exception:
+            pass
+    # Application Default Credentials only (no key file in app folder)
     try:
-        credentials = service_account.Credentials.from_service_account_file(sa_path)
-        return bigquery.Client(credentials=credentials, project=credentials.project_id)
+        project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+        return bigquery.Client(project=project) if project else bigquery.Client()
     except Exception:
         return None
 
@@ -297,6 +311,1344 @@ def realtime():
     return render_template("under_development.html", active_nav="realtime")
 
 
+PARTS_TABLE = "alubee-prod.alubee_production_marts.dim_component_mapper"
+MONTHLY_PLANNER_TABLE = "alubee-prod.alubee_production_marts.dim_monthly_planner"
+MACHINE_MAPPER_TABLE = "alubee-prod.alubee_production_marts.dim_machine_mapper"
+JOB_ALLOCATOR_TABLE = "alubee-prod.alubee_production_marts.fact_job_allocator"
+
+
+def fetch_monthly_planner(plan_month: str | None = None, department: str | None = None):
+    """Fetch rows from monthly planner table, optionally filtered by plan_month (yyyy-mm) and department."""
+    if bq_client is None:
+        return []
+
+    base_query = f"""
+        SELECT
+            plan_id,
+            plan_month,
+            department,
+            part_no,
+            part_name,
+            schedule,
+            opening_qty,
+            balance_to_be_produced,
+            priority,
+            allocated,
+            IFNULL(produced, 0) AS produced
+        FROM `{MONTHLY_PLANNER_TABLE}`
+    """
+    params = []
+    where_clauses = []
+    if plan_month:
+        where_clauses.append("plan_month = @plan_month")
+        params.append(bigquery.ScalarQueryParameter("plan_month", "STRING", plan_month))
+    if department:
+        where_clauses.append("department = @department")
+        params.append(bigquery.ScalarQueryParameter("department", "STRING", department))
+
+    if where_clauses:
+        base_query += " WHERE " + " AND ".join(where_clauses)
+    base_query += " ORDER BY plan_id"
+
+    job_config = None
+    if params:
+        job_config = bigquery.QueryJobConfig(query_parameters=params)
+
+    try:
+        result = bq_client.query(base_query, job_config=job_config).result()
+        return [
+            {
+                "plan_id": row["plan_id"],
+                "month": row["plan_month"],
+                "department": row["department"],
+                "part_no": row["part_no"],
+                "part_name": row["part_name"],
+                "schedule": row["schedule"],
+                "opening_qty": row["opening_qty"],
+                "balance_to_be_produced": row["balance_to_be_produced"],
+                "priority": row["priority"],
+                "allocated": row["allocated"] if row["allocated"] is not None else 0,
+                "produced": row["produced"] if row["produced"] is not None else 0,
+            }
+            for row in result
+        ]
+    except Exception as e:
+        app.logger.warning("BigQuery fetch_monthly_planner failed: %s", e)
+        return []
+
+
+def _get_next_plan_id():
+    """Return next plan_id as MAX(plan_id)+1."""
+    if bq_client is None:
+        return None
+    query = f"SELECT IFNULL(MAX(plan_id), 0) AS max_id FROM `{MONTHLY_PLANNER_TABLE}`"
+    try:
+        row = next(bq_client.query(query).result(), None)
+        max_id = row["max_id"] if row and row["max_id"] is not None else 0
+        return int(max_id) + 1
+    except Exception as e:
+        app.logger.warning("BigQuery _get_next_plan_id failed: %s", e)
+        return None
+
+
+def _get_part_by_part_no(part_no: str):
+    """Return dict with part_no, part_name (and other fields) for part_no or None. Table uses part_no as key (no part_id)."""
+    if bq_client is None or not part_no:
+        return None
+    query = f"""SELECT part_no, part_name, department, components_in_fixture, cycle_time_sec, qty_per_hour
+        FROM `{PARTS_TABLE}` WHERE part_no = @part_no LIMIT 1"""
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("part_no", "STRING", part_no)]
+    )
+    try:
+        row = next(bq_client.query(query, job_config=job_config).result(), None)
+        if not row:
+            return None
+        return {
+            "id": row["part_no"],
+            "part_no": row["part_no"],
+            "part_name": row["part_name"],
+            "department": (row.get("department") or "").strip() or "",
+            "components_in_fixture": row.get("components_in_fixture"),
+            "cycle_time_sec": row.get("cycle_time_sec"),
+            "qty_per_hour": row.get("qty_per_hour"),
+        }
+    except Exception as e:
+        app.logger.warning("BigQuery _get_part_by_part_no failed: %s", e)
+        return None
+
+
+def _get_part_id_by_part_no(part_no: str):
+    """Return part_no for given part_no (for compatibility; table has no part_id)."""
+    return part_no if part_no else None
+
+
+def _get_plan_by_id(plan_id: int):
+    """Return single monthly plan dict by plan_id or None."""
+    if bq_client is None or plan_id is None:
+        return None
+    query = f"""
+        SELECT plan_id, plan_month, department, part_no, part_name, schedule, opening_qty,
+               balance_to_be_produced, priority, allocated, IFNULL(produced, 0) AS produced
+        FROM `{MONTHLY_PLANNER_TABLE}` WHERE plan_id = @plan_id LIMIT 1
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("plan_id", "INT64", plan_id)]
+    )
+    try:
+        row = next(bq_client.query(query, job_config=job_config).result(), None)
+        if not row:
+            return None
+        return {
+            "plan_id": row["plan_id"],
+            "plan_month": row["plan_month"],
+            "department": row["department"],
+            "part_no": row["part_no"],
+            "part_name": row["part_name"],
+            "schedule": row["schedule"],
+            "opening_qty": row["opening_qty"],
+            "balance_to_be_produced": row["balance_to_be_produced"],
+            "priority": row["priority"],
+            "allocated": row["allocated"] if row["allocated"] is not None else 0,
+            "produced": row["produced"] if row["produced"] is not None else 0,
+        }
+    except Exception as e:
+        app.logger.warning("BigQuery _get_plan_by_id failed: %s", e)
+        return None
+
+
+def fetch_machine_units():
+    """Fetch distinct unit values from fact_job_allocator for Job Allocator slicer."""
+    if bq_client is None:
+        return []
+    query = f"""
+        SELECT DISTINCT unit
+        FROM `{JOB_ALLOCATOR_TABLE}`
+        WHERE unit IS NOT NULL
+        ORDER BY unit
+    """
+    try:
+        result = bq_client.query(query).result()
+        return [row["unit"] for row in result]
+    except Exception as e:
+        app.logger.warning("BigQuery fetch_machine_units failed: %s", e)
+        return []
+
+
+def fetch_machines(department: str | None = None, unit: str | None = None):
+    """Fetch machines from fact_job_allocator, optionally filtered by department and unit."""
+    if bq_client is None:
+        return []
+    base_query = f"""
+        SELECT machine_no, unit, department
+        FROM `{JOB_ALLOCATOR_TABLE}`
+    """
+    params = []
+    where_clauses = []
+    if department:
+        where_clauses.append("department = @department")
+        params.append(bigquery.ScalarQueryParameter("department", "STRING", department))
+    if unit:
+        where_clauses.append("unit = @unit")
+        params.append(bigquery.ScalarQueryParameter("unit", "STRING", unit))
+    if where_clauses:
+        base_query += " WHERE " + " AND ".join(where_clauses)
+    base_query += " ORDER BY department, unit, machine_no"
+
+    job_config = bigquery.QueryJobConfig(query_parameters=params) if params else None
+    try:
+        result = bq_client.query(base_query, job_config=job_config).result()
+        return [
+            {
+                "machine_no": row["machine_no"],
+                "unit": row["unit"],
+                "department": row["department"],
+            }
+            for row in result
+        ]
+    except Exception as e:
+        app.logger.warning("BigQuery fetch_machines failed: %s", e)
+        return []
+
+
+def _format_timestamp_ist(ts):
+    """Format a datetime (UTC, naive or aware) as IST string for display."""
+    if ts is None:
+        return ""
+    try:
+        if ZoneInfo is not None:
+            ist = ZoneInfo("Asia/Kolkata")
+            if getattr(ts, "tzinfo", None) is None:
+                ts = ts.replace(tzinfo=ZoneInfo("UTC"))
+            local = ts.astimezone(ist)
+            return local.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        pass
+    if hasattr(ts, "strftime"):
+        return ts.strftime("%Y-%m-%d %H:%M")
+    return str(ts)
+
+
+def fetch_job_allocations(department: str | None = None, unit: str | None = None):
+    """Fetch latest job allocation row per machine_no (fact-style history; show only last updated).
+    Filtered by department and unit. job_created_at is returned formatted in IST.
+    """
+    if bq_client is None:
+        return []
+    base_query = """
+        SELECT part_no, plan, produced, shift_allocated, consumed_shift, job_created_at, machine_no
+        FROM (
+            SELECT part_no, plan, produced, shift_allocated, consumed_shift, job_created_at, machine_no,
+                   ROW_NUMBER() OVER (PARTITION BY machine_no ORDER BY job_created_at DESC) AS rn
+            FROM `{table}`
+            WHERE 1=1
+    """.format(table=JOB_ALLOCATOR_TABLE)
+    params = []
+    if department:
+        base_query += " AND LOWER(TRIM(COALESCE(department, ''))) = LOWER(TRIM(@department))"
+        params.append(bigquery.ScalarQueryParameter("department", "STRING", department))
+    if unit:
+        base_query += " AND LOWER(TRIM(COALESCE(unit, ''))) = LOWER(TRIM(@unit))"
+        params.append(bigquery.ScalarQueryParameter("unit", "STRING", unit))
+    base_query += """
+        ) t
+        WHERE rn = 1
+        ORDER BY machine_no
+    """
+
+    job_config = bigquery.QueryJobConfig(query_parameters=params) if params else None
+    try:
+        result = bq_client.query(base_query, job_config=job_config).result()
+    except Exception as e1:
+        app.logger.warning("BigQuery fetch_job_allocations failed: %s", e1)
+        return []
+
+    rows = []
+    for row in result:
+        r = dict(row) if hasattr(row, "keys") else row
+        def _v(k):
+            return r.get(k) or r.get(k.lower()) or r.get(k.upper())
+        jca = _v("job_created_at")
+        jca_str = _format_timestamp_ist(jca) if jca else ""
+        rows.append(
+            {
+                "part_no": _v("part_no"),
+                "plan": _v("plan"),
+                "produced": _v("produced"),
+                "shift_allocated": _v("shift_allocated"),
+                "consumed_shift": _v("consumed_shift"),
+                "job_created_at": jca_str,
+                "machine_no": _v("machine_no"),
+            }
+        )
+    return rows
+
+
+def fetch_parts_count(department: str | None = None) -> int:
+    """Return total number of parts (for Part Manager pagination), with optional department filter."""
+    if bq_client is None:
+        return 0
+    base_query = f"SELECT COUNT(*) AS n FROM `{PARTS_TABLE}`"
+    params = []
+    if department:
+        base_query += " WHERE LOWER(TRIM(COALESCE(department, ''))) = LOWER(TRIM(@department))"
+        params.append(bigquery.ScalarQueryParameter("department", "STRING", department))
+    job_config = bigquery.QueryJobConfig(query_parameters=params) if params else None
+    try:
+        row = next(bq_client.query(base_query, job_config=job_config).result(), None)
+        return int(row["n"]) if row and row["n"] is not None else 0
+    except Exception as e:
+        app.logger.warning("BigQuery fetch_parts_count failed: %s", e)
+        return 0
+
+
+def fetch_parts(
+    department: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+):
+    """Fetch parts from BigQuery, optionally filtered by department. Optional limit/offset for pagination."""
+    if bq_client is None:
+        return []
+    base_query = f"""
+        SELECT
+            part_no,
+            part_name,
+            department,
+            components_in_fixture,
+            cycle_time_sec,
+            qty_per_hour
+        FROM `{PARTS_TABLE}`
+    """
+    params = []
+    if department:
+        base_query += " WHERE LOWER(TRIM(COALESCE(department, ''))) = LOWER(TRIM(@department))"
+        params.append(bigquery.ScalarQueryParameter("department", "STRING", department))
+    base_query += " ORDER BY part_no"
+    if limit is not None:
+        # Use literal values; BigQuery can fail with parameterized LIMIT/OFFSET
+        base_query += f" LIMIT {int(limit)} OFFSET {int(offset)}"
+    job_config = bigquery.QueryJobConfig(query_parameters=params) if params else None
+    try:
+        result = bq_client.query(base_query, job_config=job_config).result()
+        return [
+            {
+                "id": row["part_no"],
+                "part_no": row["part_no"],
+                "part_name": row["part_name"],
+                "department": (row.get("department") or "").strip() or "",
+                "components_in_fixture": row["components_in_fixture"],
+                "cycle_time_sec": row["cycle_time_sec"],
+                "qty_per_hour": row["qty_per_hour"],
+            }
+            for row in result
+        ]
+    except Exception as e:
+        app.logger.warning("BigQuery fetch_parts failed: %s", e)
+        return []
+
+
+def _part_no_exists(part_no: str, exclude_part_no: str = None) -> bool:
+    """Return True if part_no is already used. If exclude_part_no is set, ignore that part (for edit)."""
+    if not part_no or bq_client is None:
+        return False
+    query = f"SELECT 1 FROM `{PARTS_TABLE}` WHERE part_no = @part_no"
+    params = [bigquery.ScalarQueryParameter("part_no", "STRING", part_no)]
+    if exclude_part_no:
+        query += " AND part_no != @exclude_part_no"
+        params.append(bigquery.ScalarQueryParameter("exclude_part_no", "STRING", exclude_part_no))
+    query += " LIMIT 1"
+    try:
+        row = next(
+            bq_client.query(query, job_config=bigquery.QueryJobConfig(query_parameters=params)).result(),
+            None,
+        )
+        return row is not None
+    except Exception as e:
+        app.logger.warning("BigQuery _part_no_exists failed: %s", e)
+        return False
+
+
+def _plan_exists(plan_month: str, part_no: str, exclude_plan_id: int | None = None) -> bool:
+    """Return True if a plan already exists for given month and part_no."""
+    if not plan_month or not part_no or bq_client is None:
+        return False
+    query = f"SELECT 1 FROM `{MONTHLY_PLANNER_TABLE}` WHERE plan_month = @plan_month AND part_no = @part_no"
+    params = [
+        bigquery.ScalarQueryParameter("plan_month", "STRING", plan_month),
+        bigquery.ScalarQueryParameter("part_no", "STRING", part_no),
+    ]
+    if exclude_plan_id is not None:
+        query += " AND plan_id != @exclude_plan_id"
+        params.append(bigquery.ScalarQueryParameter("exclude_plan_id", "INT64", exclude_plan_id))
+    query += " LIMIT 1"
+    try:
+        row = next(
+            bq_client.query(query, job_config=bigquery.QueryJobConfig(query_parameters=params)).result(),
+            None,
+        )
+        return row is not None
+    except Exception as e:
+        app.logger.warning("BigQuery _plan_exists failed: %s", e)
+        return False
+
+
+@app.route("/ppc")
+@login_required
+def ppc():
+    require_page("ppc")
+    # Defaults: current year/month for form and filter
+    today = date.today()
+    default_year = today.year
+    default_month = today.month
+
+    # Optional filters for monthly planner (defaults to current month, PDC).
+    filter_year_raw = request.args.get("year") or ""
+    filter_month_raw = request.args.get("month") or ""
+    filter_department_raw = (request.args.get("department") or "PDC").strip().upper()
+
+    filter_year = str(default_year)
+    filter_month = str(default_month)
+    filter_department = "PDC"
+    plan_month_filter = f"{default_year:04d}-{default_month:02d}"
+
+    try:
+        if filter_year_raw and filter_month_raw:
+            y = int(filter_year_raw)
+            m = int(filter_month_raw)
+            if y > 0 and 1 <= m <= 12:
+                plan_month_filter = f"{y:04d}-{m:02d}"
+                filter_year = str(y)
+                filter_month = str(m)
+    except (TypeError, ValueError):
+        # On invalid filter, fall back to current month defaults
+        plan_month_filter = f"{default_year:04d}-{default_month:02d}"
+        filter_year = str(default_year)
+        filter_month = str(default_month)
+
+    # Validate/normalise department (use tabs: PDC, FETTLING, CNC)
+    allowed_departments = {"PDC", "CNC", "FETTLING"}
+    if filter_department_raw in allowed_departments:
+        filter_department = filter_department_raw
+
+    parts_all = fetch_parts()  # unfiltered for monthly planner cycle_time_sec
+    # Map part_no -> cycle_time_sec from Part Manager for shift calculations
+    part_cycle_map: dict[str, int] = {}
+    for part in parts_all:
+        pn = (part.get("part_no") or "").strip()
+        if not pn:
+            continue
+        part_cycle_map[pn] = part.get("cycle_time_sec") or 0
+
+    monthly_plans = fetch_monthly_planner(plan_month_filter, filter_department)
+    # Distinct part_no, part_name from monthly planner for Job Allocator Part No dropdown,
+    # including schedule/allocated and cycle_time_sec so we can enforce plan <= schedule - allocated
+    # and compute shift required.
+    seen_part = set()
+    monthly_planner_parts = []
+    for p in monthly_plans:
+        part_no = (p.get("part_no") or "").strip()
+        if not part_no or part_no in seen_part:
+            continue
+        seen_part.add(part_no)
+        schedule = p.get("schedule") or 0
+        allocated = p.get("allocated") or 0
+        try:
+            remaining = int(schedule) - int(allocated)
+        except (TypeError, ValueError):
+            remaining = 0
+        if remaining < 0:
+            remaining = 0
+        cycle_time_sec = part_cycle_map.get(part_no, 0)
+        monthly_planner_parts.append(
+            {
+                "part_no": part_no,
+                "part_name": (p.get("part_name") or "").strip(),
+                "schedule": schedule,
+                "allocated": allocated,
+                "remaining": remaining,
+                "cycle_time_sec": cycle_time_sec,
+            }
+        )
+
+    # Daily planner: Unit I/II toggle + department slicer, machines table
+    daily_dept_raw = (request.args.get("daily_dept") or "PDC").strip().upper()
+    daily_unit_raw = request.args.get("daily_unit") or "Unit I"
+
+    daily_filter_department = "PDC"
+    if daily_dept_raw in allowed_departments:
+        daily_filter_department = daily_dept_raw
+
+    allowed_units = ("Unit I", "Unit II")
+    daily_filter_unit = "Unit I"
+    if daily_unit_raw in allowed_units:
+        daily_filter_unit = daily_unit_raw
+
+    daily_machines = fetch_machines(
+        department=daily_filter_department or None,
+        unit=daily_filter_unit,
+    )
+    job_allocations = fetch_job_allocations(
+        department=daily_filter_department or None,
+        unit=daily_filter_unit,
+    )
+
+    # Part Manager: department filter and pagination
+    part_dept_raw = (request.args.get("part_dept") or "PDC").strip().upper()
+    part_filter_department = part_dept_raw if part_dept_raw in allowed_departments else "PDC"
+    part_page = max(1, int(request.args.get("part_page") or 1))
+    part_per_page = min(100, max(5, int(request.args.get("part_per_page") or 10)))
+    parts_count = fetch_parts_count(department=part_filter_department)
+    part_total_pages = max(1, (parts_count + part_per_page - 1) // part_per_page)
+    part_page = min(part_page, part_total_pages)
+    parts = fetch_parts(
+        department=part_filter_department,
+        limit=part_per_page,
+        offset=(part_page - 1) * part_per_page,
+    )
+    # All parts for Add Monthly Plan dropdown: filtered by Monthly Planner department (e.g. PDC filter → only PDC parts)
+    monthly_planner_parts_dropdown = fetch_parts(department=filter_department, limit=None, offset=0)
+    # Part Manager tab dropdown uses its own department filter
+    parts_for_dropdown = fetch_parts(department=part_filter_department, limit=None, offset=0)
+
+    # Part numbers that already have a monthly plan for the current filter month (user can only edit those)
+    existing_plan_part_nos = [p.get("part_no") for p in monthly_plans if p.get("part_no")]
+    # Parts available for Add Monthly Plan (exclude already planned); for searchable dropdown
+    monthly_planner_add_parts = [
+        {"id": p.get("part_no"), "part_no": p.get("part_no"), "part_name": (p.get("part_name") or "").strip()}
+        for p in monthly_planner_parts_dropdown
+        if (p.get("part_no") or "").strip() not in existing_plan_part_nos
+    ]
+
+    return render_template(
+        "ppc.html",
+        active_nav="ppc",
+        parts=parts,
+        parts_for_dropdown=parts_for_dropdown,
+        monthly_planner_parts_dropdown=monthly_planner_parts_dropdown,
+        monthly_planner_add_parts=monthly_planner_add_parts,
+        part_filter_department=part_filter_department,
+        part_page=part_page,
+        part_per_page=part_per_page,
+        parts_count=parts_count,
+        part_total_pages=part_total_pages,
+        monthly_plans=monthly_plans,
+        existing_plan_part_nos=existing_plan_part_nos,
+        default_year=default_year,
+        default_month=default_month,
+        filter_year=filter_year,
+        filter_month=filter_month,
+        filter_department=filter_department,
+        daily_filter_department=daily_filter_department,
+        daily_filter_unit=daily_filter_unit,
+        daily_machines=daily_machines,
+        job_allocations=job_allocations,
+        monthly_planner_parts=monthly_planner_parts,
+    )
+
+
+@app.route("/ppc/job-allocator/update-plan", methods=["POST"])
+@login_required
+def ppc_job_allocator_update_plan():
+    """Update plan and job_created_at for a job allocation row.
+
+    Rows are identified by machine_no (plus department/unit); job_id is no longer used.
+    """
+    require_page("ppc")
+    if bq_client is None:
+        flash("BigQuery is not configured.", "danger")
+        return redirect(url_for("ppc") + "#daily-tab-pane")
+
+    machine_no = (request.form.get("machine_no") or "").strip()
+    plan_raw = request.form.get("plan") or ""
+    part_no = (request.form.get("part_no") or "").strip()
+    daily_dept = request.form.get("daily_dept") or "PDC"
+    daily_unit = request.form.get("daily_unit") or "Unit I"
+    plan_year_raw = request.form.get("plan_year") or ""
+    plan_month_raw = request.form.get("plan_month") or ""
+
+    if not machine_no:
+        flash("Invalid machine.", "danger")
+        return redirect(
+            url_for("ppc", daily_dept=daily_dept, daily_unit=daily_unit) + "#daily-tab-pane"
+        )
+
+    if not part_no:
+        flash("Please select a part.", "danger")
+        return redirect(
+            url_for("ppc", daily_dept=daily_dept, daily_unit=daily_unit) + "#daily-tab-pane"
+        )
+
+    try:
+        plan_val = int(plan_raw)
+    except (TypeError, ValueError):
+        flash("Plan must be a number.", "danger")
+        return redirect(
+            url_for("ppc", daily_dept=daily_dept, daily_unit=daily_unit) + "#daily-tab-pane"
+        )
+
+    if plan_val < 0:
+        flash("Plan cannot be negative.", "danger")
+        return redirect(
+            url_for("ppc", daily_dept=daily_dept, daily_unit=daily_unit) + "#daily-tab-pane"
+        )
+
+    # Determine plan_month (yyyy-mm) for Monthly Planner lookup (defaults to current month/year)
+    today = date.today()
+    try:
+        y = int(plan_year_raw or today.year)
+        m = int(plan_month_raw or today.month)
+        if y <= 0 or not 1 <= m <= 12:
+            raise ValueError
+        plan_month_str = f"{y:04d}-{m:02d}"
+    except (TypeError, ValueError):
+        plan_month_str = f"{today.year:04d}-{today.month:02d}"
+
+    # Enforce plan <= (schedule - allocated) from Monthly Planner for this month/part/department
+    remaining_allowed = None
+    if bq_client is not None:
+        mp_query = f"""
+            SELECT schedule, allocated
+            FROM `{MONTHLY_PLANNER_TABLE}`
+            WHERE plan_month = @plan_month
+              AND department = @department
+              AND part_no = @part_no
+            LIMIT 1
+        """
+        mp_params = [
+            bigquery.ScalarQueryParameter("plan_month", "STRING", plan_month_str),
+            bigquery.ScalarQueryParameter("department", "STRING", daily_dept),
+            bigquery.ScalarQueryParameter("part_no", "STRING", part_no),
+        ]
+        mp_job_cfg = bigquery.QueryJobConfig(query_parameters=mp_params)
+        try:
+            mp_row = next(bq_client.query(mp_query, job_config=mp_job_cfg).result(), None)
+            if mp_row is not None:
+                schedule = mp_row.get("schedule") or 0
+                allocated = mp_row.get("allocated") or 0
+                try:
+                    remaining_allowed = int(schedule) - int(allocated)
+                except (TypeError, ValueError):
+                    remaining_allowed = 0
+                if remaining_allowed < 0:
+                    remaining_allowed = 0
+        except Exception as e:
+            app.logger.warning(
+                "BigQuery fetch schedule/allocated for job allocator failed: %s", e
+            )
+
+    if remaining_allowed is None:
+        # No matching Monthly Planner row found; do not allow over-allocation
+        flash("No Monthly Planner entry found for selected month and part.", "danger")
+        return redirect(
+            url_for("ppc", daily_dept=daily_dept, daily_unit=daily_unit) + "#daily-tab-pane"
+        )
+
+    if plan_val > remaining_allowed:
+        flash(
+            f"Plan cannot exceed remaining ({remaining_allowed} = schedule - allocated).",
+            "danger",
+        )
+        return redirect(
+            url_for("ppc", daily_dept=daily_dept, daily_unit=daily_unit) + "#daily-tab-pane"
+        )
+
+    # Compute shift_allocated from Part Manager qty_per_hour:
+    # hours = plan / qty_per_hour, shift = hours / 12 (1 shift = 12 hours)
+    shift_required = 0.0
+    if bq_client is not None and part_no and plan_val > 0:
+        qty_query = f"""
+            SELECT qty_per_hour
+            FROM `{PARTS_TABLE}`
+            WHERE part_no = @part_no
+            LIMIT 1
+        """
+        qty_params = [bigquery.ScalarQueryParameter("part_no", "STRING", part_no)]
+        qty_job_cfg = bigquery.QueryJobConfig(query_parameters=qty_params)
+        try:
+            qty_row = next(bq_client.query(qty_query, job_config=qty_job_cfg).result(), None)
+            if qty_row is not None:
+                qty_per_hour = qty_row.get("qty_per_hour") or 0
+                try:
+                    qty_val = float(qty_per_hour)
+                except (TypeError, ValueError):
+                    qty_val = 0.0
+                if qty_val > 0:
+                    hours = plan_val / qty_val
+                    shift_required = round((hours / 11.5) * 100.0) / 100.0  # 2 decimal places
+        except Exception as e:
+            app.logger.warning(
+                "BigQuery fetch qty_per_hour for job allocator failed: %s", e
+            )
+
+    # Fetch current plan for this (machine_no, part_no, unit, department) to compute delta for Monthly Planner
+    old_plan = None
+    if bq_client is not None:
+        old_query = f"""
+            SELECT plan
+            FROM `{JOB_ALLOCATOR_TABLE}`
+            WHERE machine_no = @machine_no
+              AND part_no = @part_no
+              AND LOWER(TRIM(COALESCE(unit, ''))) = LOWER(TRIM(@unit))
+              AND LOWER(TRIM(COALESCE(department, ''))) = LOWER(TRIM(@department))
+            ORDER BY job_created_at DESC
+            LIMIT 1
+        """
+        old_params = [
+            bigquery.ScalarQueryParameter("machine_no", "STRING", machine_no),
+            bigquery.ScalarQueryParameter("part_no", "STRING", part_no),
+            bigquery.ScalarQueryParameter("unit", "STRING", daily_unit),
+            bigquery.ScalarQueryParameter("department", "STRING", daily_dept),
+        ]
+        try:
+            old_row = next(
+                bq_client.query(
+                    old_query,
+                    job_config=bigquery.QueryJobConfig(query_parameters=old_params),
+                ).result(),
+                None,
+            )
+            if old_row is not None:
+                p = old_row.get("plan")
+                old_plan = int(p) if p is not None else 0
+        except Exception as e:
+            app.logger.warning("BigQuery fetch old plan for job allocator failed: %s", e)
+
+    # Delta to add to Monthly Planner allocated: new plan - old plan (or +plan_val if insert)
+    allocated_delta = plan_val - (old_plan if old_plan is not None else 0)
+
+    # Same part_no + same machine_no (and unit/department): update existing row; otherwise insert new row
+    params = [
+        bigquery.ScalarQueryParameter("machine_no", "STRING", machine_no),
+        bigquery.ScalarQueryParameter("unit", "STRING", daily_unit),
+        bigquery.ScalarQueryParameter("department", "STRING", daily_dept),
+        bigquery.ScalarQueryParameter("part_no", "STRING", part_no),
+        bigquery.ScalarQueryParameter("plan", "INT64", plan_val),
+        bigquery.ScalarQueryParameter("shift_allocated", "FLOAT64", float(shift_required)),
+    ]
+    job_config = bigquery.QueryJobConfig(query_parameters=params)
+
+    update_query = f"""
+        UPDATE `{JOB_ALLOCATOR_TABLE}`
+        SET plan = @plan,
+            shift_allocated = @shift_allocated,
+            job_created_at = CURRENT_TIMESTAMP()
+        WHERE machine_no = @machine_no
+          AND part_no = @part_no
+          AND LOWER(TRIM(COALESCE(unit, ''))) = LOWER(TRIM(@unit))
+          AND LOWER(TRIM(COALESCE(department, ''))) = LOWER(TRIM(@department))
+          AND job_created_at = (
+            SELECT MAX(job_created_at)
+            FROM `{JOB_ALLOCATOR_TABLE}` t2
+            WHERE t2.machine_no = @machine_no
+              AND t2.part_no = @part_no
+              AND LOWER(TRIM(COALESCE(t2.unit, ''))) = LOWER(TRIM(@unit))
+              AND LOWER(TRIM(COALESCE(t2.department, ''))) = LOWER(TRIM(@department))
+          )
+    """
+    try:
+        update_job = bq_client.query(update_query, job_config=job_config)
+        update_job.result()
+        affected = getattr(update_job, "num_dml_affected_rows", None) or 0
+    except Exception as e:
+        app.logger.warning("BigQuery update job allocation failed: %s", e)
+        affected = 0
+
+    if affected and affected > 0:
+        flash("Job allocation updated.", "success")
+    else:
+        # No row with same machine_no + part_no: insert new row
+        insert_query = f"""
+            INSERT INTO `{JOB_ALLOCATOR_TABLE}`
+            (machine_no, unit, department, part_no, plan, produced, shift_allocated, consumed_shift, job_created_at)
+            VALUES (
+                @machine_no,
+                @unit,
+                @department,
+                @part_no,
+                @plan,
+                0,
+                @shift_allocated,
+                0,
+                CURRENT_TIMESTAMP()
+            )
+        """
+        try:
+            bq_client.query(insert_query, job_config=job_config).result()
+            flash("Job allocation saved.", "success")
+        except Exception as e:
+            app.logger.warning("BigQuery insert job allocation failed: %s", e)
+            flash("Save failed. Please try again.", "danger")
+
+    # Reflect in Monthly Planner: add allocated_delta to allocated for this month/department/part_no
+    if bq_client is not None and allocated_delta != 0:
+        mp_update = f"""
+            UPDATE `{MONTHLY_PLANNER_TABLE}`
+            SET allocated = COALESCE(allocated, 0) + @allocated_delta
+            WHERE plan_month = @plan_month
+              AND department = @department
+              AND part_no = @part_no
+        """
+        mp_params = [
+            bigquery.ScalarQueryParameter("allocated_delta", "INT64", allocated_delta),
+            bigquery.ScalarQueryParameter("plan_month", "STRING", plan_month_str),
+            bigquery.ScalarQueryParameter("department", "STRING", daily_dept),
+            bigquery.ScalarQueryParameter("part_no", "STRING", part_no),
+        ]
+        try:
+            bq_client.query(mp_update, job_config=bigquery.QueryJobConfig(query_parameters=mp_params)).result()
+        except Exception as e:
+            app.logger.warning("BigQuery update monthly planner allocated failed: %s", e)
+
+    return redirect(url_for("ppc", daily_dept=daily_dept, daily_unit=daily_unit) + "#daily-tab-pane")
+
+
+@app.route("/ppc/monthly-planner", methods=["POST"])
+@login_required
+def ppc_monthly_planner_add():
+    require_page("ppc")
+    if bq_client is None:
+        flash("BigQuery is not configured.", "danger")
+        return redirect(url_for("ppc") + "#monthly-tab-pane")
+
+    part_no_raw = (request.form.get("part_id") or "").strip()
+    department_raw = (request.form.get("department") or "").strip().upper()
+    year_raw = request.form.get("year") or ""
+    month_raw = request.form.get("month") or ""
+    schedule_raw = request.form.get("schedule") or ""
+    opening_qty_raw = request.form.get("opening_qty") or ""
+    priority = (request.form.get("priority") or "").strip()
+
+    errors = []
+    if not part_no_raw:
+        errors.append("Part is required.")
+
+    allowed_departments = {"PDC", "CNC", "FETTLING"}
+    if department_raw not in allowed_departments:
+        errors.append("Department must be one of PDC, CNC, FETTLING.")
+    if priority not in ("1st", "2nd", "3rd"):
+        errors.append("Priority must be 1st, 2nd, or 3rd.")
+
+    try:
+        year_val = int(year_raw)
+    except (TypeError, ValueError):
+        errors.append("Year must be an integer.")
+        year_val = 0
+
+    try:
+        month_val = int(month_raw)
+    except (TypeError, ValueError):
+        errors.append("Month must be an integer.")
+        month_val = 0
+
+    if year_val <= 0:
+        errors.append("Year is required.")
+    if month_val < 1 or month_val > 12:
+        errors.append("Month must be between 1 and 12.")
+
+    try:
+        schedule_val = int(schedule_raw)
+    except (TypeError, ValueError):
+        errors.append("Schedule must be an integer.")
+        schedule_val = 0
+    try:
+        opening_qty_val = int(opening_qty_raw)
+    except (TypeError, ValueError):
+        errors.append("Opening Qty must be an integer.")
+        opening_qty_val = 0
+
+    if errors:
+        for e in errors:
+            flash(e, "danger")
+        return redirect(url_for("ppc") + "#monthly-tab-pane")
+
+    part = _get_part_by_part_no(part_no_raw)
+    if not part:
+        flash("Selected part not found.", "danger")
+        return redirect(url_for("ppc") + "#monthly-tab-pane")
+
+    balance_to_be_produced = schedule_val - opening_qty_val
+    plan_month = f"{year_val:04d}-{month_val:02d}"
+    # Prevent duplicate: one plan per part per month/year; user must edit existing plan
+    if _plan_exists(plan_month, part["part_no"]):
+        flash("A plan already exists for this part in the selected month and year. Use Edit to change it.", "danger")
+        return redirect(url_for("ppc") + "#monthly-tab-pane")
+
+    allocated_val = 0
+    next_plan_id = _get_next_plan_id()
+    if next_plan_id is None:
+        flash("Could not generate Plan ID.", "danger")
+        return redirect(url_for("ppc") + "#monthly-tab-pane")
+
+    produced_val = 0
+    query = f"""
+        INSERT INTO `{MONTHLY_PLANNER_TABLE}` (
+            plan_id, plan_month, department, part_no, part_name, schedule, opening_qty,
+            balance_to_be_produced, priority, allocated, produced
+        )
+        VALUES (
+            @plan_id, @plan_month, @department, @part_no, @part_name, @schedule, @opening_qty,
+            @balance_to_be_produced, @priority, @allocated, @produced
+        )
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("plan_id", "INT64", next_plan_id),
+            bigquery.ScalarQueryParameter("plan_month", "STRING", plan_month),
+            bigquery.ScalarQueryParameter("department", "STRING", department_raw),
+            bigquery.ScalarQueryParameter("part_no", "STRING", part["part_no"]),
+            bigquery.ScalarQueryParameter("part_name", "STRING", part["part_name"]),
+            bigquery.ScalarQueryParameter("schedule", "INT64", schedule_val),
+            bigquery.ScalarQueryParameter("opening_qty", "INT64", opening_qty_val),
+            bigquery.ScalarQueryParameter("balance_to_be_produced", "INT64", balance_to_be_produced),
+            bigquery.ScalarQueryParameter("priority", "STRING", priority),
+            bigquery.ScalarQueryParameter("allocated", "INT64", allocated_val),
+            bigquery.ScalarQueryParameter("produced", "INT64", produced_val),
+        ]
+    )
+    try:
+        bq_client.query(query, job_config=job_config).result()
+        flash("Monthly plan added successfully.", "success")
+    except Exception as exc:
+        app.logger.warning("BigQuery monthly planner insert failed: %s", exc)
+        flash("Failed to add monthly plan.", "danger")
+        flash(f"BigQuery error: {exc}", "danger")
+
+    return redirect(url_for("ppc") + "#monthly-tab-pane")
+
+
+@app.route("/ppc/monthly-planner/<int:plan_id>/edit", methods=["GET", "POST"])
+@login_required
+def ppc_edit_monthly_plan(plan_id):
+    require_page("ppc")
+    plan = _get_plan_by_id(plan_id)
+    if not plan:
+        flash("Plan not found.", "danger")
+        return redirect(url_for("ppc") + "#monthly-tab-pane")
+
+    if request.method == "GET":
+        parts = fetch_parts()
+        current_part_id = _get_part_id_by_part_no(plan["part_no"])
+        return render_template(
+            "ppc_edit_monthly_plan.html",
+            active_nav="ppc",
+            plan=plan,
+            parts=parts,
+            current_part_id=current_part_id,
+        )
+
+    # POST: update plan
+    if bq_client is None:
+        flash("BigQuery is not configured.", "danger")
+        return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
+
+    part_no_raw = (request.form.get("part_id") or "").strip()
+    department_raw = (request.form.get("department") or "").strip().upper()
+    year_raw = request.form.get("year") or ""
+    month_raw = request.form.get("month") or ""
+    schedule_raw = request.form.get("schedule") or ""
+    opening_qty_raw = request.form.get("opening_qty") or ""
+    priority = (request.form.get("priority") or "").strip()
+
+    if not part_no_raw:
+        flash("Invalid part.", "danger")
+        return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
+
+    part = _get_part_by_part_no(part_no_raw)
+    if not part:
+        flash("Part not found.", "danger")
+        return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
+
+    allowed_departments = {"PDC", "CNC", "FETTLING"}
+    if department_raw not in allowed_departments:
+        flash("Department must be one of PDC, CNC, FETTLING.", "danger")
+        return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
+
+    try:
+        schedule_val = int(schedule_raw)
+        opening_qty_val = int(opening_qty_raw)
+    except (TypeError, ValueError):
+        flash("Schedule and Opening Qty must be whole numbers.", "danger")
+        return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
+
+    try:
+        year_val = int(year_raw)
+        month_val = int(month_raw)
+    except (TypeError, ValueError):
+        flash("Year and Month must be whole numbers.", "danger")
+        return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
+
+    if schedule_val < 0 or opening_qty_val < 0:
+        flash("Schedule and Opening Qty must be non-negative.", "danger")
+        return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
+
+    if year_val <= 0 or month_val < 1 or month_val > 12:
+        flash("Year must be positive and Month must be between 1 and 12.", "danger")
+        return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
+
+    balance_to_be_produced = max(0, schedule_val - opening_qty_val)
+    plan_month = f"{year_val:04d}-{month_val:02d}"
+    # Prevent duplicate (year, month, part_no) with another plan
+    if _plan_exists(plan_month, part["part_no"], exclude_plan_id=plan_id):
+        flash("Another plan already exists for this Year, Month, and Part No.", "danger")
+        return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
+    if priority not in ("1st", "2nd", "3rd"):
+        flash("Invalid priority.", "danger")
+        return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
+
+    query = f"""
+        UPDATE `{MONTHLY_PLANNER_TABLE}`
+        SET part_no = @part_no, part_name = @part_name,
+            plan_month = @plan_month,
+            department = @department,
+            schedule = @schedule, opening_qty = @opening_qty,
+            balance_to_be_produced = @balance_to_be_produced, priority = @priority
+        WHERE plan_id = @plan_id
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("plan_id", "INT64", plan_id),
+            bigquery.ScalarQueryParameter("part_no", "STRING", part["part_no"]),
+            bigquery.ScalarQueryParameter("part_name", "STRING", part["part_name"]),
+            bigquery.ScalarQueryParameter("plan_month", "STRING", plan_month),
+            bigquery.ScalarQueryParameter("department", "STRING", department_raw),
+            bigquery.ScalarQueryParameter("schedule", "INT64", schedule_val),
+            bigquery.ScalarQueryParameter("opening_qty", "INT64", opening_qty_val),
+            bigquery.ScalarQueryParameter("balance_to_be_produced", "INT64", balance_to_be_produced),
+            bigquery.ScalarQueryParameter("priority", "STRING", priority),
+        ]
+    )
+    try:
+        bq_client.query(query, job_config=job_config).result()
+        flash("Monthly plan updated successfully.", "success")
+    except Exception as exc:
+        app.logger.warning("BigQuery monthly planner update failed: %s", exc)
+        flash("Failed to update monthly plan.", "danger")
+
+    return redirect(url_for("ppc") + "#monthly-tab-pane")
+
+
+@app.route("/ppc/monthly-planner/<int:plan_id>/delete", methods=["POST"])
+@login_required
+def ppc_delete_monthly_plan(plan_id):
+    require_page("ppc")
+    if bq_client is None:
+        flash("BigQuery is not configured.", "danger")
+        return redirect(url_for("ppc") + "#monthly-tab-pane")
+
+    query = f"DELETE FROM `{MONTHLY_PLANNER_TABLE}` WHERE plan_id = @plan_id"
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("plan_id", "INT64", plan_id)]
+    )
+    try:
+        bq_client.query(query, job_config=job_config).result()
+        flash("Monthly plan deleted.", "success")
+    except Exception as exc:
+        app.logger.warning("BigQuery monthly planner delete failed: %s", exc)
+        flash("Failed to delete monthly plan.", "danger")
+
+    return redirect(url_for("ppc") + "#monthly-tab-pane")
+
+
+@app.route("/ppc/monthly-planner/delete", methods=["POST"])
+@login_required
+def ppc_delete_monthly_plans_bulk():
+    """Delete one or more monthly plans by plan_id. Form: plan_ids (list)."""
+    require_page("ppc")
+    if bq_client is None:
+        flash("BigQuery is not configured.", "danger")
+        return redirect(url_for("ppc") + "#monthly-tab-pane")
+
+    raw = request.form.getlist("plan_ids") or request.form.get("plan_ids", "").split(",")
+    plan_ids = []
+    for x in raw:
+        x = (x or "").strip()
+        if not x:
+            continue
+        try:
+            plan_ids.append(int(x))
+        except ValueError:
+            continue
+    if not plan_ids:
+        flash("No plans selected to delete.", "warning")
+        return redirect(url_for("ppc") + "#monthly-tab-pane")
+
+    # DELETE FROM ... WHERE plan_id IN UNNEST(@plan_ids)
+    query = f"DELETE FROM `{MONTHLY_PLANNER_TABLE}` WHERE plan_id IN (SELECT id FROM UNNEST(@plan_ids) AS id)"
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ArrayQueryParameter("plan_ids", "INT64", plan_ids)]
+    )
+    try:
+        bq_client.query(query, job_config=job_config).result()
+        n = len(plan_ids)
+        flash(f"{n} monthly plan(s) deleted." if n > 1 else "Monthly plan deleted.", "success")
+    except Exception as exc:
+        app.logger.warning("BigQuery monthly planner bulk delete failed: %s", exc)
+        flash("Failed to delete monthly plan(s).", "danger")
+
+    return redirect(url_for("ppc") + "#monthly-tab-pane")
+
+
+def _normalize_part_name(name: str) -> str:
+    """Uppercase part name and enforce only A-Z and hyphen."""
+    raw = (name or "").strip().upper()
+    return raw
+
+
+def _compute_qty_per_hour(cycle_time_sec: int, components_in_fixture: int = 1) -> int:
+    """Qty per hour = (3600 / cycle_time_sec) * components_in_fixture."""
+    try:
+        ct = int(cycle_time_sec)
+        comp = int(components_in_fixture)
+    except (TypeError, ValueError):
+        return 0
+    if ct <= 0:
+        return 0
+    if comp <= 0:
+        comp = 1
+    return (3600 * comp) // ct
+
+
+@app.route("/ppc/parts", methods=["POST"])
+@login_required
+def ppc_create_part():
+    require_page("ppc")
+    allowed_departments = {"PDC", "CNC", "FETTLING"}
+    part_no = (request.form.get("part_no") or "").strip()
+    part_name_raw = request.form.get("part_name") or ""
+    department_raw = (request.form.get("department") or "").strip().upper()
+    components = request.form.get("components_in_fixture") or ""
+    cycle_time = request.form.get("cycle_time_sec") or ""
+
+    part_name = _normalize_part_name(part_name_raw)
+
+    # Basic validation
+    errors = []
+    if not part_no:
+        errors.append("Part No is required.")
+    if not part_name:
+        errors.append("Part Name is required.")
+    if " " in part_name:
+        errors.append("Part Name cannot contain spaces; use hyphen (-) instead.")
+
+    if not re.fullmatch(r"[A-Z0-9-]+", part_name):
+        errors.append("Part Name must contain only capital letters, numbers, and hyphens.")
+
+    if department_raw not in allowed_departments:
+        errors.append("Department must be one of: PDC, CNC, FETTLING.")
+
+    try:
+        components_val = int(components)
+        if components_val <= 0:
+            errors.append("Component in Fixture must be a positive integer.")
+    except (TypeError, ValueError):
+        errors.append("Component in Fixture must be a positive integer.")
+
+    try:
+        cycle_val = int(cycle_time)
+        if cycle_val <= 0:
+            errors.append("Cycle Time must be a positive integer.")
+    except (TypeError, ValueError):
+        errors.append("Cycle Time must be a positive integer.")
+
+    qty_per_hour_raw = request.form.get("qty_per_hour") or ""
+    try:
+        qty_per_hour = int(qty_per_hour_raw)
+        if qty_per_hour < 0:
+            errors.append("Qty/Hour must be 0 or more (fill Cycle Time and Component in Fixture to auto-calculate).")
+    except (TypeError, ValueError):
+        errors.append("Qty/Hour is required (fill Cycle Time and Component in Fixture to auto-calculate).")
+
+    if errors:
+        for e in errors:
+            flash(e, "danger")
+        return redirect(url_for("ppc") + "#part-tab-pane")
+
+    if bq_client is None:
+        flash("BigQuery is not configured.", "danger")
+        return redirect(url_for("ppc") + "#part-tab-pane")
+
+    if _part_no_exists(part_no):
+        flash("Part No already exists. No duplicate Part No allowed.", "danger")
+        return redirect(url_for("ppc") + "#part-tab-pane")
+
+    query = f"""
+        INSERT INTO `{PARTS_TABLE}` (
+            part_no,
+            part_name,
+            department,
+            components_in_fixture,
+            cycle_time_sec,
+            qty_per_hour
+        )
+        VALUES (
+            @part_no,
+            @part_name,
+            @department,
+            @components_in_fixture,
+            @cycle_time_sec,
+            @qty_per_hour
+        )
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("part_no", "STRING", part_no),
+            bigquery.ScalarQueryParameter("part_name", "STRING", part_name),
+            bigquery.ScalarQueryParameter("department", "STRING", department_raw),
+            bigquery.ScalarQueryParameter(
+                "components_in_fixture", "INT64", components_val
+            ),
+            bigquery.ScalarQueryParameter("cycle_time_sec", "INT64", cycle_val),
+            bigquery.ScalarQueryParameter("qty_per_hour", "INT64", qty_per_hour),
+        ]
+    )
+
+    try:
+        bq_client.query(query, job_config=job_config).result()
+        flash("Part created successfully.", "success")
+    except Exception as exc:
+        app.logger.warning("BigQuery insert part failed: %s", exc)
+        flash("Failed to create part. Ensure Part Name is unique.", "danger")
+        flash(f"BigQuery error: {exc}", "danger")
+
+    return redirect(url_for("ppc") + "#part-tab-pane")
+
+
+@app.route("/ppc/parts/<part_no>/delete", methods=["POST"])
+@login_required
+def ppc_delete_part(part_no: str):
+    require_page("ppc")
+    if bq_client is None:
+        flash("BigQuery is not configured.", "danger")
+        return redirect(url_for("ppc") + "#part-tab-pane")
+
+    query = f"DELETE FROM `{PARTS_TABLE}` WHERE part_no = @part_no"
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("part_no", "STRING", part_no),
+        ]
+    )
+    try:
+        bq_client.query(query, job_config=job_config).result()
+        flash("Part deleted successfully.", "success")
+    except Exception as exc:
+        app.logger.warning("BigQuery delete part %s failed: %s", part_no, exc)
+        flash("Failed to delete part.", "danger")
+        flash(f"BigQuery error: {exc}", "danger")
+    return redirect(url_for("ppc") + "#part-tab-pane")
+
+
+@app.route("/ppc/parts/<part_no>/edit", methods=["GET", "POST"])
+@login_required
+def ppc_edit_part(part_no: str):
+    require_page("ppc")
+    allowed_departments = {"PDC", "CNC", "FETTLING"}
+    if request.method == "POST":
+        part_no_new = (request.form.get("part_no") or "").strip()
+        part_name_raw = request.form.get("part_name") or ""
+        department_raw = (request.form.get("department") or "").strip().upper()
+        components = request.form.get("components_in_fixture") or ""
+        cycle_time = request.form.get("cycle_time_sec") or ""
+
+        part_name = _normalize_part_name(part_name_raw)
+
+        errors = []
+        if not part_no_new:
+            errors.append("Part No is required.")
+        if not part_name:
+            errors.append("Part Name is required.")
+        if " " in part_name:
+            errors.append("Part Name cannot contain spaces; use hyphen (-) instead.")
+
+        if not re.fullmatch(r"[A-Z0-9-]+", part_name):
+            errors.append("Part Name must contain only capital letters, numbers, and hyphens.")
+
+        if department_raw not in allowed_departments:
+            errors.append("Department must be one of: PDC, CNC, FETTLING.")
+
+        try:
+            components_val = int(components)
+            if components_val <= 0:
+                errors.append("Component in Fixture must be a positive integer.")
+        except (TypeError, ValueError):
+            errors.append("Component in Fixture must be a positive integer.")
+
+        try:
+            cycle_val = int(cycle_time)
+            if cycle_val <= 0:
+                errors.append("Cycle Time must be a positive integer.")
+        except (TypeError, ValueError):
+            errors.append("Cycle Time must be a positive integer.")
+
+        qty_per_hour_raw = request.form.get("qty_per_hour") or ""
+        try:
+            qty_per_hour = int(qty_per_hour_raw)
+            if qty_per_hour < 0:
+                errors.append("Qty/Hour must be 0 or more (fill Cycle Time and Component in Fixture to auto-calculate).")
+        except (TypeError, ValueError):
+            errors.append("Qty/Hour is required (fill Cycle Time and Component in Fixture to auto-calculate).")
+
+        if errors:
+            for e in errors:
+                flash(e, "danger")
+            return redirect(url_for("ppc_edit_part", part_no=part_no))
+
+        if bq_client is None:
+            flash("BigQuery is not configured.", "danger")
+            return redirect(url_for("ppc_edit_part", part_no=part_no))
+
+        if _part_no_exists(part_no_new, exclude_part_no=part_no):
+            flash("Part No already exists. No duplicate Part No allowed.", "danger")
+            return redirect(url_for("ppc_edit_part", part_no=part_no))
+
+        query = f"""
+            UPDATE `{PARTS_TABLE}`
+            SET
+                part_no = @part_no,
+                part_name = @part_name,
+                department = @department,
+                components_in_fixture = @components_in_fixture,
+                cycle_time_sec = @cycle_time_sec,
+                qty_per_hour = @qty_per_hour
+            WHERE part_no = @current_part_no
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("part_no", "STRING", part_no_new),
+                bigquery.ScalarQueryParameter("part_name", "STRING", part_name),
+                bigquery.ScalarQueryParameter("department", "STRING", department_raw),
+                bigquery.ScalarQueryParameter(
+                    "components_in_fixture", "INT64", components_val
+                ),
+                bigquery.ScalarQueryParameter("cycle_time_sec", "INT64", cycle_val),
+                bigquery.ScalarQueryParameter("qty_per_hour", "INT64", qty_per_hour),
+                bigquery.ScalarQueryParameter("current_part_no", "STRING", part_no),
+            ]
+        )
+
+        try:
+            bq_client.query(query, job_config=job_config).result()
+            flash("Part updated successfully.", "success")
+            return redirect(url_for("ppc") + "#part-tab-pane")
+        except Exception as exc:
+            app.logger.warning("BigQuery update part %s failed: %s", part_no, exc)
+            flash("Failed to update part. Ensure Part Name is unique.", "danger")
+            flash(f"BigQuery error: {exc}", "danger")
+            return redirect(url_for("ppc_edit_part", part_no=part_no))
+
+    # GET
+    if bq_client is None:
+        flash("BigQuery is not configured.", "danger")
+        return redirect(url_for("ppc") + "#part-tab-pane")
+
+    part = _get_part_by_part_no(part_no)
+    if not part:
+        flash("Part not found.", "danger")
+        return redirect(url_for("ppc") + "#part-tab-pane")
+    part["department"] = part.get("department") or None
+    return render_template("ppc_edit_part.html", active_nav="ppc", part=part)
+
+
 @app.route("/consumables")
 @login_required
 def consumables():
@@ -425,4 +1777,5 @@ if __name__ == "__main__":
         conn.commit()
         conn.close()
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    debug = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
+    app.run(host="0.0.0.0", port=port, debug=debug)
