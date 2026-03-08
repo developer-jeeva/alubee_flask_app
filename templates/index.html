@@ -434,18 +434,41 @@
 		<div class="app-content pt-3 p-md-3 p-lg-4">
 			<div class="container-xl">
 
-				<ul class="nav nav-tabs mb-3" id="productionTabs" role="tablist">
-					<li class="nav-item" role="presentation">
-						<button class="nav-link" id="realtime-tab" data-bs-toggle="tab" data-bs-target="#realtime-tab-pane" type="button" role="tab" aria-controls="realtime-tab-pane" aria-selected="false">
-							Realtime
-						</button>
-					</li>
-					<li class="nav-item" role="presentation">
-						<button class="nav-link active" id="history-tab" data-bs-toggle="tab" data-bs-target="#history-tab-pane" type="button" role="tab" aria-controls="history-tab-pane" aria-selected="true">
-							History
-						</button>
-					</li>
-				</ul>
+				<div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
+					<ul class="nav nav-tabs mb-0" id="productionTabs" role="tablist">
+						<li class="nav-item" role="presentation">
+							<button class="nav-link" id="realtime-tab" data-bs-toggle="tab" data-bs-target="#realtime-tab-pane" type="button" role="tab" aria-controls="realtime-tab-pane" aria-selected="false">
+								Realtime
+							</button>
+						</li>
+						<li class="nav-item" role="presentation">
+							<button class="nav-link active" id="history-tab" data-bs-toggle="tab" data-bs-target="#history-tab-pane" type="button" role="tab" aria-controls="history-tab-pane" aria-selected="true">
+								History
+							</button>
+						</li>
+					</ul>
+					<form class="d-flex flex-wrap align-items-center gap-2 mb-0" id="global-filter-form" method="get">
+						<input type="date" class="form-control form-control-sm" name="dateFilter" id="dateFilter" aria-label="Select Date" value="{{ selected_date or '' }}" style="width: auto;">
+						<select class="form-select form-select-sm w-auto" name="unitSlicer" id="unitSlicer" style="min-width: 6rem;">
+							<option value="All" {{ 'selected' if selected_unit == 'All' else '' }}>All Units</option>
+							{% for u in unit_options %}
+								<option value="{{ u }}" {{ 'selected' if selected_unit == u else '' }}>{{ u }}</option>
+							{% endfor %}
+						</select>
+						<select class="form-select form-select-sm w-auto" name="shiftSlicer" id="shiftSlicer" style="min-width: 6rem;">
+							<option value="All" {{ 'selected' if selected_shift == 'All' else '' }}>All Shift</option>
+							{% for s in shift_options %}
+								<option value="{{ s }}" {{ 'selected' if selected_shift == s else '' }}>{{ s }}</option>
+							{% endfor %}
+						</select>
+						<select class="form-select form-select-sm w-auto" name="departmentSlicer" id="departmentSlicer" style="min-width: 7rem;">
+							<option value="All" {{ 'selected' if selected_department == 'All' else '' }}>All Departments</option>
+							{% for d in department_options %}
+								<option value="{{ d }}" {{ 'selected' if selected_department == d else '' }}>{{ d }}</option>
+							{% endfor %}
+						</select>
+					</form>
+				</div>
 
 				<div class="tab-content" id="productionTabsContent">
 					<div class="tab-pane fade" id="realtime-tab-pane" role="tabpanel" aria-labelledby="realtime-tab" tabindex="0">
@@ -461,63 +484,17 @@
 					</div>
 
 					<div class="tab-pane fade show active" id="history-tab-pane" role="tabpanel" aria-labelledby="history-tab" tabindex="0">
-						<div class="row g-3 mb-4 align-items-center justify-content-between">
-							<div class="col-auto">
-								<h2 class="app-page-title mb-0">History Dashboard</h2>
+						<div class="row g-4 mb-4">
+							<div class="col-12">
+								<h2 class="app-page-title mb-3">History Dashboard</h2>
 							</div>
-							<div class="col-auto">
-								<div class="page-utilities">
-									<div class="row g-2 justify-content-start justify-content-md-end align-items-center">
-										<div class="col-auto">
-											<form class="table-search-form row gx-2 align-items-center" id="global-filter-form" method="get">
-												<div class="col-auto">
-													<input
-														type="date"
-														class="form-control"
-														name="dateFilter"
-														id="dateFilter"
-														aria-label="Select Date"
-														value="{{ selected_date or '' }}"
-													>
-												</div>
-												<div class="col-auto">
-													<select class="form-select w-auto" name="unitSlicer" id="unitSlicer">
-														<option value="All" {{ 'selected' if selected_unit == 'All' else '' }}>All Units</option>
-														{% for u in unit_options %}
-															<option value="{{ u }}" {{ 'selected' if selected_unit == u else '' }}>{{ u }}</option>
-														{% endfor %}
-													</select>
-												</div>
-												<div class="col-auto">
-													<select class="form-select w-auto" name="shiftSlicer" id="shiftSlicer">
-														<option value="All" {{ 'selected' if selected_shift == 'All' else '' }}>All Shift</option>
-														{% for s in shift_options %}
-															<option value="{{ s }}" {{ 'selected' if selected_shift == s else '' }}>{{ s }}</option>
-														{% endfor %}
-													</select>
-												</div>
-												<div class="col-auto">
-													<select class="form-select w-auto" name="departmentSlicer"
-														id="departmentSlicer">
-														<option value="All" {{ 'selected' if selected_department == 'All' else '' }}>All Departments</option>
-														{% for d in department_options %}
-															<option value="{{ d }}" {{ 'selected' if selected_department == d else '' }}>{{ d }}</option>
-														{% endfor %}
-													</select>
-												</div>
-											</form>
-										</div><!--//col-->
-									</div><!--//row-->
-								</div><!--//page-utilities-->
-							</div><!--//col-auto-->
-						</div><!--//row-->
-
+						</div>
 						<div class="row g-4 mb-4">
 							<div class="col-12">
 								<div class="app-card app-card-settings shadow-sm p-4">
 									<div class="app-card-body">
 										<div class="table-responsive">
-											<table class="table table-hover mb-0 text-left" id="production-dashboard-table">
+											<table class="table table-hover table-bordered mb-0 text-left" id="production-dashboard-table">
 												<thead>
 													<tr>
 														<th class="cell" colspan="5"></th>
@@ -623,7 +600,7 @@
 								<div class="app-card app-card-settings shadow-sm p-4">
 									<div class="app-card-body">
 										<div class="table-responsive table-scroll-y">
-									<table class="table table-hover mb-0 text-left" id="machine-dashboard-table">
+									<table class="table table-hover table-bordered mb-0 text-left" id="machine-dashboard-table">
 										<thead>
 											<tr>
 												<th class="cell"></th>
@@ -679,6 +656,12 @@
 									</table>
 								</div><!--//table-responsive-->
 								<style>
+									/* Ensure all cells have visible borders (rows and columns) */
+									#machine-dashboard-table,
+									#machine-dashboard-table th,
+									#machine-dashboard-table td {
+										border: 1px solid #dee2e6 !important;
+									}
 									#machine-dashboard-table .border-col-left,
 									#production-dashboard-table .border-col-left {
 										border-left: 2px solid #dee2e6 !important;
@@ -711,32 +694,27 @@
 										top: 0;
 										z-index: 3;
 										background-color: #ffffff;
-										box-shadow: 0 0 0 1px #ffffff; /* seal edges */
+										box-shadow: 0 0 0 1px #dee2e6;
 									}
 									.table-scroll-y thead th {
 										background-color: #ffffff !important;
 										vertical-align: middle;
 									}
-									/* Remove gap between first and second header row */
+									/* First header row (Idle Time): full borders, no shadow so line below shows */
 									#machine-dashboard-table thead tr:first-child th {
 										padding-bottom: 0;
-										border-bottom: 1px solid #dee2e6;
-										/* Extend solid fill below to cover any sub-pixel gap */
-										box-shadow: 0 2px 0 0 #ffffff;
+										border: 1px solid #dee2e6 !important;
 									}
+									/* Second header row (Machine, Break, etc.): full borders so line between rows shows */
 									#machine-dashboard-table thead tr:nth-child(2) th {
 										padding-top: 0;
-										border-top: none;
-										border-bottom: 1px solid #dee2e6; /* horizontal line under second header row */
-										/* Overlap upward so no crack shows when scrolling */
-										box-shadow: 0 -1px 0 0 #ffffff;
+										border: 1px solid #dee2e6 !important;
+										border-top: 2px solid #dee2e6 !important;
+										border-bottom: 2px solid #dee2e6 !important;
 									}
-									/* Horizontal line above the first data row – visible separator under header */
+									/* Horizontal line above the first data row */
 									#machine-dashboard-table tbody tr:first-child td {
 										border-top: 2px solid #dee2e6 !important;
-									}
-									#machine-dashboard-table thead tr:nth-child(2) th {
-										border-bottom: 2px solid #dee2e6 !important;
 									}
 								</style>
 							</div><!--//app-card-body-->
