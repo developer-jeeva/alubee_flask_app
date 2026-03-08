@@ -14,5 +14,5 @@ COPY . .
 ENV PORT=8080
 EXPOSE 8080
 
-# Run with gunicorn for production
-CMD exec gunicorn --bind :${PORT} --workers 1 --threads 8 --timeout 0 main:app
+# Run with gunicorn for production. Build must be from production folder so main.py and auth.py are in /app.
+CMD exec gunicorn --bind 0.0.0.0:${PORT} --workers 1 --threads 8 --timeout 0 main:app

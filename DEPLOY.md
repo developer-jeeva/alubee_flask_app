@@ -16,6 +16,8 @@ This folder is set up to deploy **without** a service account JSON file in the r
 
 ## 2. Deploy from the `production` folder
 
+**Important:** You must build and deploy **from inside the production folder** so that `main.py`, `auth.py`, `templates/`, and `static/` are at the image root. Building from the repo root will cause "No module named 'main'" on Cloud Run.
+
 From the **production** directory (this folder):
 
 ```bash
@@ -35,7 +37,8 @@ gcloud run deploy alubee-app \
 Or build with Docker and push to Artifact Registry, then deploy:
 
 ```bash
-# Build
+cd production   # must be in production folder
+# Build (context is current dir so main.py is in /app)
 docker build -t gcr.io/$PROJECT_ID/alubee-app:latest .
 
 # Push (configure docker for gcr first: gcloud auth configure-docker)

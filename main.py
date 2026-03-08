@@ -56,6 +56,9 @@ login_manager.login_message = "Please log in to access this page."
 # Page key for each route (used for permission checks)
 PAGE_KEYS = [p[0] for p in auth.PAGE_KEYS]
 
+# Ensure DB and tables exist when run under gunicorn (if __name__ == "__main__" is not run)
+auth.init_db()
+
 
 def _init_bigquery_client():
     """Initialise BigQuery client. No service account file in this folder.
