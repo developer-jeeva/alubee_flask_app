@@ -47,6 +47,26 @@ SHIFT_OPTIONS = ["Shift I", "Shift II"]
 DEPARTMENT_OPTIONS = ["PDC", "CNC"]
 
 app = Flask(__name__)
+
+
+@app.template_filter("minutes_hm")
+def minutes_hm(value):
+    """Format minutes as 'XH YM' or 'XM'. Keeps non-numeric values unchanged."""
+    if value is None:
+        return "-"
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return value
+    if minutes <= 0:
+        return "-"
+    if minutes < 60:
+        return f"{minutes}M"
+    hours = minutes // 60
+    rem = minutes % 60
+    if rem == 0:
+        return f"{hours}H"
+    return f"{hours}H {rem}M"
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or "change-this-to-a-random-secret-key-in-production"
 
 login_manager = LoginManager(app)

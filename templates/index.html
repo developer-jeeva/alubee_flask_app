@@ -457,6 +457,10 @@
 					}
 					.production-filter-pane-spacer { min-height: 52px; }
 					.production-section-title { font-size: 1.1rem; font-weight: 600; }
+					/* Slight elevation for Production tab tables */
+					.app-card-table-elevated {
+						box-shadow: 0 2px 8px rgba(0,0,0,0.08), 0 1px 3px rgba(0,0,0,0.06) !important;
+					}
 				</style>
 				<div class="production-filter-pane-spacer d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
 					<div></div>
@@ -519,7 +523,7 @@
 						</div>
 						<div class="row g-4 mb-4">
 							<div class="col-12">
-								<div class="app-card app-card-settings shadow-sm p-4">
+								<div class="app-card app-card-settings app-card-table-elevated shadow-sm p-4">
 									<div class="app-card-body">
 										<div class="table-responsive">
 											<table class="table table-hover table-bordered mb-0 text-left" id="production-dashboard-table">
@@ -620,14 +624,14 @@
 
 						<div class="row g-4 mb-4">
 							<div class="col-12">
-								<div class="app-card app-card-settings shadow-sm p-4">
+								<div class="app-card app-card-settings app-card-table-elevated shadow-sm p-4">
 									<div class="app-card-body">
 										<div class="table-responsive table-scroll-y">
 									<table class="table table-hover table-bordered mb-0 text-left" id="machine-dashboard-table">
 										<thead>
 											<tr>
 												<th class="cell"></th>
-												<th class="cell text-center border-col-left" colspan="9">Idle Time (In Minutes)</th>
+												<th class="cell text-center border-col-left" colspan="9">Idle Time (H / M)</th>
 												<th class="cell text-center border-col-left"></th>
 											</tr>
 											<tr>
@@ -650,15 +654,15 @@
 												{% set eff = row.Usage_Percent or 0 %}
 												<tr data-usage-percent="{{ eff }}" data-original-index="{{ loop.index0 }}">
 													<td class="cell"><span class="truncate">{{ row.Machine_no }}</span></td>
-													<td class="cell text-center border-col-left">{{ '-' if (row.Break is none or row.Break == 0) else row.Break }}</td>
-													<td class="cell text-center">{{ '-' if (row.Mould is none or row.Mould == 0) else row.Mould }}</td>
-													<td class="cell text-center">{{ '-' if (row.Powercut is none or row.Powercut == 0) else row.Powercut }}</td>
-													<td class="cell text-center">{{ '-' if (row.Maintenance is none or row.Maintenance == 0) else row.Maintenance }}</td>
-													<td class="cell text-center">{{ '-' if (row.Setting is none or row.Setting == 0) else row.Setting }}</td>
-													<td class="cell text-center">{{ '-' if (row.Manpower is none or row.Manpower == 0) else row.Manpower }}</td>
-													<td class="cell text-center">{{ '-' if (row.Noload is none or row.Noload == 0) else row.Noload }}</td>
-													<td class="cell text-center">{{ '-' if (row.Without_Notice is none or row.Without_Notice == 0) else row.Without_Notice }}</td>
-													<td class="cell text-center">{{ row.Total_Downtime_Minutes }}</td>
+													<td class="cell text-center border-col-left">{{ '-' if (row.Break is none or row.Break == 0) else (row.Break|minutes_hm) }}</td>
+													<td class="cell text-center">{{ '-' if (row.Mould is none or row.Mould == 0) else (row.Mould|minutes_hm) }}</td>
+													<td class="cell text-center">{{ '-' if (row.Powercut is none or row.Powercut == 0) else (row.Powercut|minutes_hm) }}</td>
+													<td class="cell text-center">{{ '-' if (row.Maintenance is none or row.Maintenance == 0) else (row.Maintenance|minutes_hm) }}</td>
+													<td class="cell text-center">{{ '-' if (row.Setting is none or row.Setting == 0) else (row.Setting|minutes_hm) }}</td>
+													<td class="cell text-center">{{ '-' if (row.Manpower is none or row.Manpower == 0) else (row.Manpower|minutes_hm) }}</td>
+													<td class="cell text-center">{{ '-' if (row.Noload is none or row.Noload == 0) else (row.Noload|minutes_hm) }}</td>
+													<td class="cell text-center">{{ '-' if (row.Without_Notice is none or row.Without_Notice == 0) else (row.Without_Notice|minutes_hm) }}</td>
+													<td class="cell text-center">{{ row.Total_Downtime_Minutes|minutes_hm }}</td>
 													<td class="cell text-center border-col-left">
 														{% if eff >= 90 %}
 															<span class="badge bg-success">{{ '%.1f'|format(eff) }}%</span>
