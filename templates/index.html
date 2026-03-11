@@ -525,17 +525,16 @@
 							<div class="col-12">
 								<div class="app-card app-card-settings app-card-table-elevated shadow-sm p-4">
 									<div class="app-card-body">
-										<div class="table-responsive">
+										<div class="table-responsive table-scroll-y">
 											<table class="table table-hover table-bordered mb-0 text-left" id="production-dashboard-table">
 												<thead>
 													<tr>
-														<th class="cell" colspan="5"></th>
+														<th class="cell" colspan="4"></th>
 														<th class="cell text-center border-col-left" colspan="2">IoT</th>
 														<th class="cell text-center border-col-left" colspan="1"></th>
 														<th class="cell" colspan="2"></th>
 													</tr>
 													<tr>
-														<th class="cell">S.No</th>
 														<th class="cell">Part Number</th>
 														<th class="cell text-center">Fixture</th>
 														<th class="cell text-center">Cycle Time</th>
@@ -548,66 +547,38 @@
 													</tr>
 												</thead>
 												<tbody>
-													<tr data-rejection-percent="0.3" data-original-index="0">
-														<td class="cell">1</td>
-														<td class="cell"><span class="truncate">PN-1001</span></td>
-														<td class="cell text-center">F-01</td>
-														<td class="cell text-center">45s</td>
-														<td class="cell text-center">1200</td>
-														<td class="cell text-center border-col-left">1150</td>
-														<td class="cell text-center">1148</td>
-														<td class="cell text-center border-col-left">1145</td>
-														<td class="cell text-center">3</td>
-														<td class="cell text-center"><span class="badge bg-success">0.3%</span></td>
-													</tr>
-													<tr data-rejection-percent="0.4" data-original-index="1">
-														<td class="cell">2</td>
-														<td class="cell"><span class="truncate">PN-1002</span></td>
-														<td class="cell text-center">F-02</td>
-														<td class="cell text-center">52s</td>
-														<td class="cell text-center">800</td>
-														<td class="cell text-center border-col-left">790</td>
-														<td class="cell text-center">788</td>
-														<td class="cell text-center border-col-left">785</td>
-														<td class="cell text-center">3</td>
-														<td class="cell text-center"><span class="badge bg-success">0.4%</span></td>
-													</tr>
-													<tr data-rejection-percent="1.1" data-original-index="2">
-														<td class="cell">3</td>
-														<td class="cell"><span class="truncate">PN-1003</span></td>
-														<td class="cell text-center">F-03</td>
-														<td class="cell text-center">38s</td>
-														<td class="cell text-center">2000</td>
-														<td class="cell text-center border-col-left">1900</td>
-														<td class="cell text-center">1895</td>
-														<td class="cell text-center border-col-left">1875</td>
-														<td class="cell text-center">20</td>
-														<td class="cell text-center"><span class="badge bg-warning">1.1%</span></td>
-													</tr>
-													<tr data-rejection-percent="0.6" data-original-index="3">
-														<td class="cell">4</td>
-														<td class="cell"><span class="truncate">PN-1004</span></td>
-														<td class="cell text-center">F-01</td>
-														<td class="cell text-center">48s</td>
-														<td class="cell text-center">500</td>
-														<td class="cell text-center border-col-left">495</td>
-														<td class="cell text-center">493</td>
-														<td class="cell text-center border-col-left">490</td>
-														<td class="cell text-center">3</td>
-														<td class="cell text-center"><span class="badge bg-success">0.6%</span></td>
-													</tr>
-													<tr data-rejection-percent="1.1" data-original-index="4">
-														<td class="cell">5</td>
-														<td class="cell"><span class="truncate">PN-1005</span></td>
-														<td class="cell text-center">F-04</td>
-														<td class="cell text-center">42s</td>
-														<td class="cell text-center">1500</td>
-														<td class="cell text-center border-col-left">1420</td>
-														<td class="cell text-center">1410</td>
-														<td class="cell text-center border-col-left">1395</td>
-														<td class="cell text-center">15</td>
-														<td class="cell text-center"><span class="badge bg-warning">1.1%</span></td>
-													</tr>
+													{% if iot_rows %}
+														{% for row in iot_rows %}
+														{% set plan_val = row.plan or 0 %}
+														{% set qty_val = row.quantity or 0 %}
+														{% set mock_idx = loop.index0 % 5 %}
+														{% set mock_qty_diff = [3, 3, 20, 3, 15][mock_idx] %}
+														{% set mock_rej_pct = [0.3, 0.4, 1.1, 0.6, 1.1][mock_idx] %}
+														<tr data-rejection-percent="{{ '%.2f'|format(mock_rej_pct) }}" data-original-index="{{ loop.index0 }}">
+															<td class="cell"><span class="truncate">{{ row.partNo or row.item_code or '-' }}</span></td>
+															<td class="cell text-center">{{ row.components_in_fixture if row.components_in_fixture is not none else '-' }}</td>
+															<td class="cell text-center">{{ (row.cycle_time_sec ~ 's') if row.cycle_time_sec is not none else '-' }}</td>
+															<td class="cell text-center">{{ plan_val }}</td>
+															<td class="cell text-center border-col-left">{{ row.shot if row.shot is not none else '-' }}</td>
+															<td class="cell text-center">{{ qty_val }}</td>
+															<td class="cell text-center border-col-left">-</td>
+															<td class="cell text-center">{{ mock_qty_diff }}</td>
+															<td class="cell text-center">
+																{% if mock_rej_pct >= 2 %}
+																	<span class="badge bg-danger">{{ '%.1f'|format(mock_rej_pct) }}%</span>
+																{% elif mock_rej_pct >= 0.5 %}
+																	<span class="badge bg-warning">{{ '%.1f'|format(mock_rej_pct) }}%</span>
+																{% else %}
+																	<span class="badge bg-success">{{ '%.1f'|format(mock_rej_pct) }}%</span>
+																{% endif %}
+															</td>
+														</tr>
+														{% endfor %}
+													{% else %}
+														<tr>
+															<td class="cell text-center" colspan="9">No data for selected filters.</td>
+														</tr>
+													{% endif %}
 												</tbody>
 											</table>
 										</div><!--//table-responsive-->
@@ -713,8 +684,19 @@
 										border-radius: 4px;
 									}
 									/* Sticky header block: no gap between rows, solid so body doesn't show through */
-									#machine-dashboard-table {
+									#machine-dashboard-table,
+									#production-dashboard-table {
 										border-collapse: collapse;
+									}
+									#production-dashboard-table tbody tr:first-child td {
+										border-top: 2px solid #dee2e6 !important;
+									}
+									/* Row line between IoT (first header row) and second header row */
+									#production-dashboard-table thead tr:first-child th {
+										border-bottom: 2px solid #dee2e6 !important;
+									}
+									#production-dashboard-table thead tr:nth-child(2) th {
+										border-top: 2px solid #dee2e6 !important;
 									}
 									.table-scroll-y thead {
 										position: sticky;

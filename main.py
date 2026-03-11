@@ -192,6 +192,67 @@ def fetch_machine_idle_rows(date_str=None, shift=None, unit=None, department=Non
         return []
 
 
+IOT_MASTER_TABLE = "alubee_production_marts.fact_iot_master"
+
+
+def fetch_iot_master_rows(date_str=None, shift=None, unit=None, department=None):
+    """Fetch production/IoT rows from fact_iot_master. Same filters as machine idle (date, shift, unit, department)."""
+    if bq_client is None:
+        return []
+    cache_key = ("iot_master", date_str, shift, unit, department)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    query = """
+        SELECT
+            shift_date,
+            shift_id,
+            unit,
+            department,
+            item_code,
+            partNo,
+            cycle_time_sec,
+            components_in_fixture,
+            shot,
+            quantity,
+            plan
+        FROM `""" + IOT_MASTER_TABLE + """`
+        WHERE 1 = 1
+    """
+    params = []
+
+    if date_str:
+        query += " AND shift_date = @date"
+        params.append(bigquery.ScalarQueryParameter("date", "DATE", date_str))
+
+    if shift and shift != "All":
+        query += " AND shift_id = @shift"
+        params.append(bigquery.ScalarQueryParameter("shift", "STRING", shift))
+
+    if unit and unit != "All":
+        query += " AND unit = @unit"
+        params.append(bigquery.ScalarQueryParameter("unit", "STRING", unit))
+
+    if department and department != "All":
+        query += " AND department = @department"
+        params.append(bigquery.ScalarQueryParameter("department", "STRING", department))
+
+    query += " ORDER BY partNo, shift_id"
+
+    job_config = bigquery.QueryJobConfig(query_parameters=params)
+
+    try:
+        result = bq_client.query(query, job_config=job_config).result()
+        rows = [dict(row) for row in result]
+        app.logger.info("IoT master: date=%s unit=%s shift=%s dept=%s -> %d rows", date_str, unit, shift, department, len(rows))
+        _cache_set(cache_key, rows)
+        return rows
+    except Exception as e:
+        app.logger.warning("BigQuery IoT master query failed: %s", e)
+        return []
+
+
 class User(UserMixin):
     def __init__(self, id_, email, role="viewer", allowed_pages=None):
         self.id = id_
@@ -266,6 +327,12 @@ def index():
         unit=selected_unit,
         department=selected_department,
     )
+    iot_rows = fetch_iot_master_rows(
+        date_str=selected_date,
+        shift=selected_shift,
+        unit=selected_unit,
+        department=selected_department,
+    )
 
     # If no rows for chosen date (e.g. data is in 2026, yesterday is 2025), use latest date in table
     if not machine_rows and selected_date == yesterday:
@@ -278,11 +345,18 @@ def index():
                 unit=selected_unit,
                 department=selected_department,
             )
+            iot_rows = fetch_iot_master_rows(
+                date_str=selected_date,
+                shift=selected_shift,
+                unit=selected_unit,
+                department=selected_department,
+            )
 
     highlights_filter = auth.get_user_preference(current_user.id, "highlightsFilter") or "bad"
     return render_template(
         "index.html",
         machine_rows=machine_rows,
+        iot_rows=iot_rows,
         selected_date=selected_date,
         selected_shift=selected_shift,
         selected_unit=selected_unit,
