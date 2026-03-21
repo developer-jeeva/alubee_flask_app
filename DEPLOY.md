@@ -1,6 +1,6 @@
 # Deploy Flask app to Google Cloud Run
 
-This folder is set up to deploy **without** a service account JSON file in the repo. Cloud Run uses **Application Default Credentials** (the service account attached to the Cloud Run service).
+This folder is set up to deploy **without** a service account JSON file in the image. The app uses **Application Default Credentials** — the **Cloud Run service identity** (grant it BigQuery IAM roles).
 
 ## Prerequisites
 
@@ -18,7 +18,7 @@ This folder is set up to deploy **without** a service account JSON file in the r
 
 **Important:** You must build and deploy **from inside this `Production` folder** so that `main.py`, `auth.py`, `templates/`, and `static/` are at the image root. Building from the repo root will cause "No module named 'main'" on Cloud Run.
 
-After changing code in the **parent repo root**, sync into this folder (see **`SYNC_FROM_ROOT.md`**) before you build.
+Keep the deployable app files in this folder aligned with the **parent repo** (local) app before each build.
 
 From the **`Production`** directory (this folder):
 
@@ -60,13 +60,20 @@ gcloud run deploy alubee-app \
 - **SECRET_KEY** – Set in Cloud Run **Variables** or **Secrets** for Flask session security (override the default in code).
 - **BQ_CREDENTIALS_PATH** – Do **not** set in production. Only for local dev when using a key file outside the repo.
 
-## 4. Local development with a key file
+## 4. Local development (run from repo root, not this folder)
 
-To use a key file locally without putting it in the repo:
+Use one of:
+
+```bash
+gcloud auth application-default login
+python main.py
+```
+
+Or a key file **outside** the repo:
 
 ```bash
 export BQ_CREDENTIALS_PATH=/path/to/your/service-account-key.json
 python main.py
 ```
 
-The app never requires `bq_service_acc.json` in the repo; on Cloud Run it uses the attached service account automatically.
+On **Cloud Run**, do not set `BQ_CREDENTIALS_PATH`; the runtime service account is used automatically.

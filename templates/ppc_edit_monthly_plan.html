@@ -66,6 +66,30 @@
                   <label for="schedule" class="form-label">Schedule</label>
                   <input type="number" class="form-control" id="schedule" name="schedule" min="0" step="1" value="{{ plan.schedule }}" required>
                 </div>
+                <div class="col-12">
+                  <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" role="switch" id="monthly_add_backup_plan" name="add_monthly_backup_plan" value="1" {% if plan.back_up_part_no %}checked{% endif %}>
+                    <label class="form-check-label" for="monthly_add_backup_plan">Add Back Up Plan</label>
+                  </div>
+                </div>
+                <div class="col-12 {% if not plan.back_up_part_no %}d-none{% endif %}" id="monthly_backup_plan_section">
+                  <h6 class="mb-3">Back Up Plan</h6>
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label for="monthly_backup_part_search" class="form-label">Part No</label>
+                      <div class="position-relative" id="monthly-backup-part-combobox-wrap">
+                        <input type="text" class="form-control" id="monthly_backup_part_search" autocomplete="off" placeholder="Search or select part..." aria-label="Search backup part" value="{{ backup_search_label }}">
+                        <input type="hidden" id="monthly_backup_part_id" name="monthly_back_up_part_id" value="{{ plan.back_up_part_no or '' }}">
+                        <div class="list-group position-absolute top-100 start-0 end-0 mt-1 shadow-sm border rounded overflow-auto d-none" id="monthly_backup_part_dropdown" style="max-height: 220px; z-index: 1060;"></div>
+                      </div>
+                      <small class="text-muted">{{ plan.department or 'PDC' }} parts only. Cannot be the same as the primary part.</small>
+                    </div>
+                    <div class="col-md-3">
+                      <label for="monthly_backup_schedule" class="form-label">Schedule</label>
+                      <input type="number" class="form-control" id="monthly_backup_schedule" name="monthly_back_up_schedule" min="0" step="1" placeholder="0" value="{% if plan.back_up_schedule is not none %}{{ plan.back_up_schedule }}{% endif %}">
+                    </div>
+                  </div>
+                </div>
                 <div class="col-md-3">
                   <label for="opening_qty" class="form-label">Opening Qty</label>
                   <input type="number" class="form-control" id="opening_qty" name="opening_qty" min="0" step="1" value="{{ plan.opening_qty }}" required>
@@ -111,6 +135,146 @@
   }
   if (schedule) schedule.addEventListener('input', updateBalance);
   if (openingQty) openingQty.addEventListener('input', updateBalance);
+
+  var monthlyPlannerBackupPartsOptions = {{ backup_parts_dropdown|tojson }};
+  var partSelect = document.getElementById('part_id');
+  var monthlyAddBackupCheckbox = document.getElementById('monthly_add_backup_plan');
+  var monthlyBackupSection = document.getElementById('monthly_backup_plan_section');
+  var monthlyBackupPartSearch = document.getElementById('monthly_backup_part_search');
+  var monthlyBackupPartId = document.getElementById('monthly_backup_part_id');
+  var monthlyBackupPartDropdown = document.getElementById('monthly_backup_part_dropdown');
+  var monthlyBackupSchedule = document.getElementById('monthly_backup_schedule');
+  var editForm = document.getElementById('edit-monthly-plan-form');
+
+  function primaryPartNo() {
+    if (!partSelect) return '';
+    var v = (partSelect.value || '').trim();
+    return v;
+  }
+
+  function monthlyBackupOptionsFiltered() {
+    var primary = primaryPartNo();
+    return (monthlyPlannerBackupPartsOptions || []).filter(function (p) {
+      var pn = (p.part_no || '').trim();
+      return !primary || pn !== primary;
+    });
+  }
+
+  function monthlyBackupPartFilter(q) {
+    var lower = (q || '').toLowerCase();
+    return monthlyBackupOptionsFiltered().filter(function (p) {
+      var no = (p.part_no || '').toLowerCase();
+      var name = (p.part_name || '').toLowerCase();
+      return no.indexOf(lower) !== -1 || name.indexOf(lower) !== -1;
+    });
+  }
+
+  function monthlyBackupPartRenderList(parts) {
+    if (!monthlyBackupPartDropdown) return;
+    monthlyBackupPartDropdown.innerHTML = '';
+    if (parts.length === 0) {
+      monthlyBackupPartDropdown.classList.add('d-none');
+      return;
+    }
+    parts.forEach(function (p) {
+      var label = (p.part_no || '') + (p.part_name ? ' - ' + p.part_name : '');
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'list-group-item list-group-item-action list-group-item-light border-0 text-start';
+      btn.textContent = label;
+      btn.dataset.id = p.id || p.part_no;
+      btn.dataset.label = label;
+      monthlyBackupPartDropdown.appendChild(btn);
+    });
+    monthlyBackupPartDropdown.classList.remove('d-none');
+  }
+
+  function monthlyBackupPartSelect(id, label) {
+    if (monthlyBackupPartId) monthlyBackupPartId.value = id || '';
+    if (monthlyBackupPartSearch) monthlyBackupPartSearch.value = label || '';
+    if (monthlyBackupPartDropdown) monthlyBackupPartDropdown.classList.add('d-none');
+  }
+
+  function toggleMonthlyBackupSection(on) {
+    if (monthlyBackupSection) monthlyBackupSection.classList.toggle('d-none', !on);
+    if (monthlyBackupSchedule) {
+      monthlyBackupSchedule.required = !!on;
+      if (!on) {
+        monthlyBackupSchedule.value = '';
+        monthlyBackupPartSelect('', '');
+      }
+    }
+    if (monthlyBackupPartSearch) monthlyBackupPartSearch.required = !!on;
+  }
+
+  if (monthlyAddBackupCheckbox) {
+    monthlyAddBackupCheckbox.addEventListener('change', function () {
+      toggleMonthlyBackupSection(this.checked);
+      if (this.checked && monthlyBackupPartSearch) {
+        monthlyBackupPartRenderList(monthlyBackupPartFilter(monthlyBackupPartSearch.value));
+      }
+    });
+    if (monthlyAddBackupCheckbox.checked) {
+      toggleMonthlyBackupSection(true);
+    }
+  }
+
+  if (partSelect) {
+    partSelect.addEventListener('change', function () {
+      if (monthlyBackupPartId && monthlyBackupPartId.value && primaryPartNo() === monthlyBackupPartId.value.trim()) {
+        monthlyBackupPartSelect('', '');
+      }
+      if (monthlyAddBackupCheckbox && monthlyAddBackupCheckbox.checked && monthlyBackupPartSearch) {
+        monthlyBackupPartRenderList(monthlyBackupPartFilter(monthlyBackupPartSearch.value));
+      }
+    });
+  }
+
+  if (monthlyBackupPartSearch && monthlyBackupPartDropdown && monthlyBackupPartId) {
+    monthlyBackupPartSearch.addEventListener('focus', function () {
+      var q = this.value.trim();
+      monthlyBackupPartRenderList(q ? monthlyBackupPartFilter(q) : monthlyBackupOptionsFiltered());
+    });
+    monthlyBackupPartSearch.addEventListener('input', function () {
+      monthlyBackupPartRenderList(monthlyBackupPartFilter(this.value));
+      monthlyBackupPartId.value = '';
+    });
+    monthlyBackupPartSearch.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && monthlyBackupPartDropdown) monthlyBackupPartDropdown.classList.add('d-none');
+    });
+    monthlyBackupPartDropdown.addEventListener('click', function (e) {
+      var btn = e.target.closest('button[data-id]');
+      if (btn) monthlyBackupPartSelect(btn.dataset.id, btn.dataset.label);
+    });
+    document.addEventListener('click', function (e) {
+      var wrap = document.getElementById('monthly-backup-part-combobox-wrap');
+      if (wrap && !wrap.contains(e.target) && monthlyBackupPartDropdown) monthlyBackupPartDropdown.classList.add('d-none');
+    });
+  }
+
+  if (editForm) {
+    editForm.addEventListener('submit', function (e) {
+      if (monthlyAddBackupCheckbox && monthlyAddBackupCheckbox.checked) {
+        if (!monthlyBackupPartId || !monthlyBackupPartId.value.trim()) {
+          e.preventDefault();
+          alert('Please search and select a Back Up Plan part from the list.');
+          if (monthlyBackupPartSearch) monthlyBackupPartSearch.focus();
+          return false;
+        }
+        if (!monthlyBackupSchedule || String(monthlyBackupSchedule.value || '').trim() === '') {
+          e.preventDefault();
+          alert('Please enter Back Up Plan schedule.');
+          if (monthlyBackupSchedule) monthlyBackupSchedule.focus();
+          return false;
+        }
+        if (monthlyBackupPartId.value.trim() === primaryPartNo()) {
+          e.preventDefault();
+          alert('Back Up Plan part cannot be the same as the primary part.');
+          return false;
+        }
+      }
+    });
+  }
 })();
 </script>
 {% endblock %}
