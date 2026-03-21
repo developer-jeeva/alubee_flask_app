@@ -127,8 +127,6 @@
                     <th class="cell text-center">Opening Qty</th>
                     <th class="cell text-center">Balance</th>
                     <th class="cell text-center">Priority</th>
-                    <th class="cell">Back up Part No</th>
-                    <th class="cell text-center">Back up Schedule</th>
                     <th class="cell text-center">Allocated</th>
                     <th class="cell text-center">Produced</th>
                   </tr>
@@ -151,15 +149,13 @@
                       <td class="cell text-center">{{ row.opening_qty }}</td>
                       <td class="cell text-center">{{ row.balance_to_be_produced }}</td>
                       <td class="cell text-center">{{ row.priority }}</td>
-                      <td class="cell">{{ row.back_up_part_no if row.back_up_part_no is not none else '-' }}</td>
-                      <td class="cell text-center">{{ row.back_up_schedule if row.back_up_schedule is not none else '-' }}</td>
                       <td class="cell text-center">{{ row.allocated or 0 }}</td>
                       <td class="cell text-center">{{ row.produced or 0 }}</td>
                     </tr>
                     {% endfor %}
                   {% else %}
                     <tr>
-                      <td class="cell text-center" colspan="13">No plans yet. Add one using the form above.</td>
+                      <td class="cell text-center" colspan="11">No plans yet. Add one using the form above.</td>
                     </tr>
                   {% endif %}
                 </tbody>
@@ -551,30 +547,6 @@
                 <option value="3rd">3rd</option>
               </select>
             </div>
-            <div class="col-12">
-              <div class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" role="switch" id="monthly_add_backup_plan" name="add_monthly_backup_plan" value="1">
-                <label class="form-check-label" for="monthly_add_backup_plan">Add Back Up Plan</label>
-              </div>
-            </div>
-            <div class="col-12 d-none" id="monthly_backup_plan_section">
-              <h6 class="mb-3">Back Up Plan</h6>
-              <div class="row g-3">
-                <div class="col-md-6">
-                  <label for="monthly_backup_part_search" class="form-label">Part No</label>
-                  <div class="position-relative" id="monthly-backup-part-combobox-wrap">
-                    <input type="text" class="form-control" id="monthly_backup_part_search" autocomplete="off" placeholder="Search or select part..." aria-label="Search backup part">
-                    <input type="hidden" id="monthly_backup_part_id" name="monthly_back_up_part_id" value="">
-                    <div class="list-group position-absolute top-100 start-0 end-0 mt-1 shadow-sm border rounded overflow-auto d-none" id="monthly_backup_part_dropdown" style="max-height: 220px; z-index: 1060;"></div>
-                  </div>
-                  <small class="text-muted">{{ filter_department or 'PDC' }} parts only. Cannot be the same as the primary part.</small>
-                </div>
-                <div class="col-md-3">
-                  <label for="monthly_backup_schedule" class="form-label">Schedule</label>
-                  <input type="number" class="form-control" id="monthly_backup_schedule" name="monthly_back_up_schedule" min="0" step="1" placeholder="0">
-                </div>
-              </div>
-            </div>
           </div>
         </div>
         <div class="modal-footer">
@@ -957,104 +929,9 @@
 
     // Monthly planner Add form: searchable Part dropdown
     var monthlyPlannerAddPartsOptions = {{ monthly_planner_add_parts|tojson }};
-    var monthlyPlannerBackupPartsOptions = {{ monthly_planner_parts_dropdown|tojson }};
     var monthlyPartSearch = document.getElementById('monthly_part_search');
     var monthlyPartId = document.getElementById('monthly_part_id');
     var monthlyPartDropdown = document.getElementById('monthly_part_dropdown');
-    var monthlyAddBackupCheckbox = document.getElementById('monthly_add_backup_plan');
-    var monthlyBackupSection = document.getElementById('monthly_backup_plan_section');
-    var monthlyBackupPartSearch = document.getElementById('monthly_backup_part_search');
-    var monthlyBackupPartId = document.getElementById('monthly_backup_part_id');
-    var monthlyBackupPartDropdown = document.getElementById('monthly_backup_part_dropdown');
-    var monthlyBackupSchedule = document.getElementById('monthly_backup_schedule');
-
-    function monthlyBackupOptionsFiltered() {
-      var primary = (monthlyPartId && monthlyPartId.value) ? monthlyPartId.value.trim() : '';
-      return (monthlyPlannerBackupPartsOptions || []).filter(function (p) {
-        var pn = (p.part_no || '').trim();
-        return !primary || pn !== primary;
-      });
-    }
-
-    function monthlyBackupPartFilter(q) {
-      var lower = (q || '').toLowerCase();
-      return monthlyBackupOptionsFiltered().filter(function (p) {
-        var no = (p.part_no || '').toLowerCase();
-        var name = (p.part_name || '').toLowerCase();
-        return no.indexOf(lower) !== -1 || name.indexOf(lower) !== -1;
-      });
-    }
-
-    function monthlyBackupPartRenderList(parts) {
-      if (!monthlyBackupPartDropdown) return;
-      monthlyBackupPartDropdown.innerHTML = '';
-      if (parts.length === 0) {
-        monthlyBackupPartDropdown.classList.add('d-none');
-        return;
-      }
-      parts.forEach(function (p) {
-        var label = (p.part_no || '') + (p.part_name ? ' - ' + p.part_name : '');
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'list-group-item list-group-item-action list-group-item-light border-0 text-start';
-        btn.textContent = label;
-        btn.dataset.id = p.id || p.part_no;
-        btn.dataset.label = label;
-        monthlyBackupPartDropdown.appendChild(btn);
-      });
-      monthlyBackupPartDropdown.classList.remove('d-none');
-    }
-
-    function monthlyBackupPartSelect(id, label) {
-      if (monthlyBackupPartId) monthlyBackupPartId.value = id || '';
-      if (monthlyBackupPartSearch) monthlyBackupPartSearch.value = label || '';
-      if (monthlyBackupPartDropdown) monthlyBackupPartDropdown.classList.add('d-none');
-    }
-
-    function toggleMonthlyBackupSection(on) {
-      if (monthlyBackupSection) monthlyBackupSection.classList.toggle('d-none', !on);
-      if (monthlyBackupSchedule) {
-        monthlyBackupSchedule.required = !!on;
-        if (!on) monthlyBackupSchedule.value = '';
-      }
-      if (monthlyBackupPartSearch) {
-        monthlyBackupPartSearch.required = !!on;
-        if (!on) {
-          monthlyBackupPartSelect('', '');
-        }
-      }
-    }
-
-    if (monthlyAddBackupCheckbox) {
-      monthlyAddBackupCheckbox.addEventListener('change', function () {
-        toggleMonthlyBackupSection(this.checked);
-        if (this.checked && monthlyBackupPartSearch) {
-          monthlyBackupPartRenderList(monthlyBackupPartFilter(monthlyBackupPartSearch.value));
-        }
-      });
-    }
-
-    if (monthlyBackupPartSearch && monthlyBackupPartDropdown && monthlyBackupPartId) {
-      monthlyBackupPartSearch.addEventListener('focus', function () {
-        var q = this.value.trim();
-        monthlyBackupPartRenderList(q ? monthlyBackupPartFilter(q) : monthlyBackupOptionsFiltered());
-      });
-      monthlyBackupPartSearch.addEventListener('input', function () {
-        monthlyBackupPartRenderList(monthlyBackupPartFilter(this.value));
-        monthlyBackupPartId.value = '';
-      });
-      monthlyBackupPartSearch.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && monthlyBackupPartDropdown) monthlyBackupPartDropdown.classList.add('d-none');
-      });
-      monthlyBackupPartDropdown.addEventListener('click', function (e) {
-        var btn = e.target.closest('button[data-id]');
-        if (btn) monthlyBackupPartSelect(btn.dataset.id, btn.dataset.label);
-      });
-      document.addEventListener('click', function (e) {
-        var wrap = document.getElementById('monthly-backup-part-combobox-wrap');
-        if (wrap && !wrap.contains(e.target) && monthlyBackupPartDropdown) monthlyBackupPartDropdown.classList.add('d-none');
-      });
-    }
 
     function monthlyPartFilter(q) {
       var lower = (q || '').toLowerCase();
@@ -1089,13 +966,6 @@
       if (monthlyPartId) monthlyPartId.value = id || '';
       if (monthlyPartSearch) monthlyPartSearch.value = label || '';
       if (monthlyPartDropdown) monthlyPartDropdown.classList.add('d-none');
-      // Primary part changed: refresh backup list and clear backup if same part
-      if (monthlyBackupPartId && monthlyBackupPartId.value && id && monthlyBackupPartId.value.trim() === String(id).trim()) {
-        monthlyBackupPartSelect('', '');
-      }
-      if (monthlyAddBackupCheckbox && monthlyAddBackupCheckbox.checked && monthlyBackupPartSearch) {
-        monthlyBackupPartRenderList(monthlyBackupPartFilter(monthlyBackupPartSearch.value));
-      }
     }
 
     if (monthlyPartSearch && monthlyPartDropdown && monthlyPartId) {
@@ -1127,9 +997,6 @@
       monthlyPlannerModalEl.addEventListener('show.bs.modal', function () {
         monthlyPartSelect('', '');
         if (monthlyPartSearch) monthlyPartSearch.placeholder = 'Search or select part...';
-        if (monthlyAddBackupCheckbox) monthlyAddBackupCheckbox.checked = false;
-        toggleMonthlyBackupSection(false);
-        if (monthlyBackupPartDropdown) monthlyBackupPartDropdown.classList.add('d-none');
       });
     }
 
@@ -1141,25 +1008,6 @@
           alert('Please search and select a part from the list.');
           if (monthlyPartSearch) monthlyPartSearch.focus();
           return false;
-        }
-        if (monthlyAddBackupCheckbox && monthlyAddBackupCheckbox.checked) {
-          if (!monthlyBackupPartId || !monthlyBackupPartId.value.trim()) {
-            e.preventDefault();
-            alert('Please search and select a Back Up Plan part from the list.');
-            if (monthlyBackupPartSearch) monthlyBackupPartSearch.focus();
-            return false;
-          }
-          if (!monthlyBackupSchedule || String(monthlyBackupSchedule.value || '').trim() === '') {
-            e.preventDefault();
-            alert('Please enter Back Up Plan schedule.');
-            if (monthlyBackupSchedule) monthlyBackupSchedule.focus();
-            return false;
-          }
-          if (monthlyBackupPartId.value.trim() === monthlyPartId.value.trim()) {
-            e.preventDefault();
-            alert('Back Up Plan part cannot be the same as the primary part.');
-            return false;
-          }
         }
       });
     }

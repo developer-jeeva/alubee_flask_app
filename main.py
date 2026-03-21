@@ -696,9 +696,7 @@ def fetch_monthly_planner(plan_month: str | None = None, department: str | None 
             balance_to_be_produced,
             priority,
             allocated,
-            IFNULL(produced, 0) AS produced,
-            back_up_part_no,
-            back_up_schedule
+            IFNULL(produced, 0) AS produced
         FROM `{MONTHLY_PLANNER_TABLE}`
     """
     params = []
@@ -733,8 +731,6 @@ def fetch_monthly_planner(plan_month: str | None = None, department: str | None 
                 "priority": row["priority"],
                 "allocated": row["allocated"] if row["allocated"] is not None else 0,
                 "produced": row["produced"] if row["produced"] is not None else 0,
-                "back_up_part_no": row.get("back_up_part_no"),
-                "back_up_schedule": row.get("back_up_schedule"),
             }
             for row in result
         ]
@@ -795,8 +791,7 @@ def _get_plan_by_id(plan_id: int):
         return None
     query = f"""
         SELECT plan_id, plan_month, department, part_no, part_name, schedule, opening_qty,
-               balance_to_be_produced, priority, allocated, IFNULL(produced, 0) AS produced,
-               back_up_part_no, back_up_schedule
+               balance_to_be_produced, priority, allocated, IFNULL(produced, 0) AS produced
         FROM `{MONTHLY_PLANNER_TABLE}` WHERE plan_id = @plan_id LIMIT 1
     """
     job_config = bigquery.QueryJobConfig(
@@ -818,8 +813,6 @@ def _get_plan_by_id(plan_id: int):
             "priority": row["priority"],
             "allocated": row["allocated"] if row["allocated"] is not None else 0,
             "produced": row["produced"] if row["produced"] is not None else 0,
-            "back_up_part_no": row.get("back_up_part_no"),
-            "back_up_schedule": row.get("back_up_schedule"),
         }
     except Exception as e:
         app.logger.warning("BigQuery _get_plan_by_id failed: %s", e)
@@ -1645,10 +1638,6 @@ def ppc_monthly_planner_add():
     schedule_raw = request.form.get("schedule") or ""
     opening_qty_raw = request.form.get("opening_qty") or ""
     priority = (request.form.get("priority") or "").strip()
-    add_monthly_backup_raw = (request.form.get("add_monthly_backup_plan") or "").strip()
-    add_monthly_backup = add_monthly_backup_raw in ("1", "true", "on", "yes")
-    monthly_backup_part_raw = (request.form.get("monthly_back_up_part_id") or "").strip()
-    monthly_backup_schedule_raw = request.form.get("monthly_back_up_schedule") or ""
 
     errors = []
     if not part_no_raw:
@@ -1698,32 +1687,6 @@ def ppc_monthly_planner_add():
         flash("Selected part not found.", "danger")
         return redirect(url_for("ppc") + "#monthly-tab-pane")
 
-    back_up_part_no_val = None
-    back_up_schedule_val = None
-    if add_monthly_backup:
-        if not monthly_backup_part_raw:
-            errors.append("Back Up Plan: Part is required.")
-        if not str(monthly_backup_schedule_raw).strip():
-            errors.append("Back Up Plan: Schedule is required.")
-        if not errors:
-            backup_part = _get_part_by_part_no(monthly_backup_part_raw)
-            if not backup_part:
-                errors.append("Back Up Plan: Selected part not found.")
-            else:
-                back_up_part_no_val = backup_part["part_no"]
-                if back_up_part_no_val == part["part_no"]:
-                    errors.append("Back Up Plan part cannot be the same as the primary part.")
-                try:
-                    back_up_schedule_val = int(monthly_backup_schedule_raw)
-                except (TypeError, ValueError):
-                    errors.append("Back Up Plan: Schedule must be an integer.")
-                if not errors and back_up_schedule_val is not None and back_up_schedule_val < 0:
-                    errors.append("Back Up Plan: Schedule cannot be negative.")
-        if errors:
-            for e in errors:
-                flash(e, "danger")
-            return redirect(url_for("ppc") + "#monthly-tab-pane")
-
     balance_to_be_produced = schedule_val - opening_qty_val
     plan_month = f"{year_val:04d}-{month_val:02d}"
     # Prevent duplicate: one plan per part per month/year; user must edit existing plan
@@ -1741,13 +1704,11 @@ def ppc_monthly_planner_add():
     query = f"""
         INSERT INTO `{MONTHLY_PLANNER_TABLE}` (
             plan_id, plan_month, department, part_no, part_name, schedule, opening_qty,
-            balance_to_be_produced, priority, allocated, produced,
-            back_up_part_no, back_up_schedule
+            balance_to_be_produced, priority, allocated, produced
         )
         VALUES (
             @plan_id, @plan_month, @department, @part_no, @part_name, @schedule, @opening_qty,
-            @balance_to_be_produced, @priority, @allocated, @produced,
-            @back_up_part_no, @back_up_schedule
+            @balance_to_be_produced, @priority, @allocated, @produced
         )
     """
     job_config = bigquery.QueryJobConfig(
@@ -1763,8 +1724,6 @@ def ppc_monthly_planner_add():
             bigquery.ScalarQueryParameter("priority", "STRING", priority),
             bigquery.ScalarQueryParameter("allocated", "INT64", allocated_val),
             bigquery.ScalarQueryParameter("produced", "INT64", produced_val),
-            bigquery.ScalarQueryParameter("back_up_part_no", "STRING", back_up_part_no_val),
-            bigquery.ScalarQueryParameter("back_up_schedule", "INT64", back_up_schedule_val),
         ]
     )
     try:
@@ -1790,24 +1749,12 @@ def ppc_edit_monthly_plan(plan_id):
     if request.method == "GET":
         parts = fetch_parts()
         current_part_id = _get_part_id_by_part_no(plan["part_no"])
-        dept = (plan.get("department") or "").strip() or None
-        backup_parts_dropdown = fetch_parts(dept, None, 0)
-        backup_search_label = ""
-        bpn = (plan.get("back_up_part_no") or "").strip()
-        if bpn:
-            bp = _get_part_by_part_no(bpn)
-            if bp:
-                backup_search_label = f"{bp['part_no']} - {bp['part_name']}"
-            else:
-                backup_search_label = bpn
         return render_template(
             "ppc_edit_monthly_plan.html",
             active_nav="ppc",
             plan=plan,
             parts=parts,
             current_part_id=current_part_id,
-            backup_parts_dropdown=backup_parts_dropdown,
-            backup_search_label=backup_search_label,
         )
 
     # POST: update plan
@@ -1869,46 +1816,13 @@ def ppc_edit_monthly_plan(plan_id):
         flash("Invalid priority.", "danger")
         return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
 
-    add_monthly_backup_raw = (request.form.get("add_monthly_backup_plan") or "").strip()
-    add_monthly_backup = add_monthly_backup_raw in ("1", "true", "on", "yes")
-    monthly_backup_part_raw = (request.form.get("monthly_back_up_part_id") or "").strip()
-    monthly_backup_schedule_raw = request.form.get("monthly_back_up_schedule") or ""
-
-    back_up_part_no_val = None
-    back_up_schedule_val = None
-    if add_monthly_backup:
-        if not monthly_backup_part_raw:
-            flash("Back Up Plan: Part is required.", "danger")
-            return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
-        if not str(monthly_backup_schedule_raw).strip():
-            flash("Back Up Plan: Schedule is required.", "danger")
-            return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
-        backup_part = _get_part_by_part_no(monthly_backup_part_raw)
-        if not backup_part:
-            flash("Back Up Plan: Selected part not found.", "danger")
-            return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
-        back_up_part_no_val = backup_part["part_no"]
-        if back_up_part_no_val == part["part_no"]:
-            flash("Back Up Plan part cannot be the same as the primary part.", "danger")
-            return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
-        try:
-            back_up_schedule_val = int(monthly_backup_schedule_raw)
-        except (TypeError, ValueError):
-            flash("Back Up Plan: Schedule must be an integer.", "danger")
-            return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
-        if back_up_schedule_val < 0:
-            flash("Back Up Plan: Schedule cannot be negative.", "danger")
-            return redirect(url_for("ppc_edit_monthly_plan", plan_id=plan_id))
-
     query = f"""
         UPDATE `{MONTHLY_PLANNER_TABLE}`
         SET part_no = @part_no, part_name = @part_name,
             plan_month = @plan_month,
             department = @department,
             schedule = @schedule, opening_qty = @opening_qty,
-            balance_to_be_produced = @balance_to_be_produced, priority = @priority,
-            back_up_part_no = @back_up_part_no,
-            back_up_schedule = @back_up_schedule
+            balance_to_be_produced = @balance_to_be_produced, priority = @priority
         WHERE plan_id = @plan_id
     """
     job_config = bigquery.QueryJobConfig(
@@ -1922,8 +1836,6 @@ def ppc_edit_monthly_plan(plan_id):
             bigquery.ScalarQueryParameter("opening_qty", "INT64", opening_qty_val),
             bigquery.ScalarQueryParameter("balance_to_be_produced", "INT64", balance_to_be_produced),
             bigquery.ScalarQueryParameter("priority", "STRING", priority),
-            bigquery.ScalarQueryParameter("back_up_part_no", "STRING", back_up_part_no_val),
-            bigquery.ScalarQueryParameter("back_up_schedule", "INT64", back_up_schedule_val),
         ]
     )
     try:
