@@ -47,6 +47,14 @@ SHIFT_OPTIONS = ["Shift I", "Shift II"]
 DEPARTMENT_OPTIONS = ["PDC", "CNC"]
 
 app = Flask(__name__)
+app.config["SECRET_KEY"] = "change-this-to-a-random-secret-key-in-production"
+
+login_manager = LoginManager(app)
+login_manager.login_view = "login"
+login_manager.login_message = "Please log in to access this page."
+
+# Page key for each route (used for permission checks)
+PAGE_KEYS = [p[0] for p in auth.PAGE_KEYS]
 
 
 @app.template_filter("minutes_hm")
@@ -67,38 +75,30 @@ def minutes_hm(value):
     if rem == 0:
         return f"{hours}H"
     return f"{hours}H {rem}M"
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or "change-this-to-a-random-secret-key-in-production"
 
-login_manager = LoginManager(app)
-login_manager.login_view = "login"
-login_manager.login_message = "Please log in to access this page."
 
-# Page key for each route (used for permission checks)
-PAGE_KEYS = [p[0] for p in auth.PAGE_KEYS]
-
-# Ensure DB and tables exist when run under gunicorn (if __name__ == "__main__" is not run)
-auth.init_db()
+@app.template_filter("sentence_case")
+def sentence_case(value):
+    """First character uppercase, rest lowercase; '-' unchanged."""
+    if value is None or value == "":
+        return "-"
+    s = str(value).strip()
+    if not s or s == "-":
+        return "-"
+    return s[0].upper() + s[1:].lower()
 
 
 def _init_bigquery_client():
-    """Initialise BigQuery client. No service account file in this folder.
+    """Initialise BigQuery client using the service account JSON in the project root.
 
-    - If BQ_CREDENTIALS_PATH is set and the file exists, use it (e.g. local dev with a key elsewhere).
-    - Otherwise use Application Default Credentials (ADC). On Cloud Run this uses the
-      service account attached to the Cloud Run service; no key file required.
     Returns None if credentials are missing or invalid so the app can still run.
     """
-    creds_path = os.environ.get("BQ_CREDENTIALS_PATH")
-    if creds_path and os.path.isfile(creds_path):
-        try:
-            credentials = service_account.Credentials.from_service_account_file(creds_path)
-            return bigquery.Client(credentials=credentials, project=credentials.project_id)
-        except Exception:
-            pass
-    # Application Default Credentials only (no key file in app folder)
+    sa_path = os.path.join(os.path.dirname(__file__), "bq_service_acc.json")
+    if not os.path.exists(sa_path):
+        return None
     try:
-        project = os.environ.get("GOOGLE_CLOUD_PROJECT")
-        return bigquery.Client(project=project) if project else bigquery.Client()
+        credentials = service_account.Credentials.from_service_account_file(sa_path)
+        return bigquery.Client(credentials=credentials, project=credentials.project_id)
     except Exception:
         return None
 
@@ -253,6 +253,154 @@ def fetch_iot_master_rows(date_str=None, shift=None, unit=None, department=None)
         return []
 
 
+def fetch_realtime_latest_rows(
+    unit: str | None = None,
+    department: str | None = None,
+    bypass_cache: bool = False,
+):
+    """Fetch realtime latest per machine for Production dashboard."""
+    if bq_client is None:
+        return []
+
+    cache_key = ("realtime_master_catalog", unit, department)
+    if not bypass_cache:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+    query = f"""
+        WITH
+          now_bounds AS (
+            SELECT
+              DATETIME(CURRENT_TIMESTAMP(), 'Asia/Kolkata') AS now_ist,
+              DATE(CURRENT_TIMESTAMP(), 'Asia/Kolkata') AS today_ist
+          ),
+          shift_window AS (
+            SELECT
+              CASE
+                WHEN EXTRACT(HOUR FROM now_ist) >= 8 AND EXTRACT(HOUR FROM now_ist) < 20 THEN
+                  TIMESTAMP(DATETIME(today_ist, TIME(8, 0, 0)), 'Asia/Kolkata')
+                WHEN EXTRACT(HOUR FROM now_ist) >= 20 THEN
+                  TIMESTAMP(DATETIME(today_ist, TIME(20, 0, 0)), 'Asia/Kolkata')
+                ELSE
+                  TIMESTAMP(DATETIME(DATE_SUB(today_ist, INTERVAL 1 DAY), TIME(20, 0, 0)), 'Asia/Kolkata')
+              END AS shift_start_ts,
+              CASE
+                WHEN EXTRACT(HOUR FROM now_ist) >= 8 AND EXTRACT(HOUR FROM now_ist) < 20 THEN
+                  TIMESTAMP(DATETIME(today_ist, TIME(20, 0, 0)), 'Asia/Kolkata')
+                WHEN EXTRACT(HOUR FROM now_ist) >= 20 THEN
+                  TIMESTAMP(DATETIME(DATE_ADD(today_ist, INTERVAL 1 DAY), TIME(8, 0, 0)), 'Asia/Kolkata')
+                ELSE
+                  TIMESTAMP(DATETIME(today_ist, TIME(8, 0, 0)), 'Asia/Kolkata')
+              END AS shift_end_ts
+            FROM now_bounds
+          ),
+          shift_catalog AS (
+            SELECT
+              src.*,
+              CASE
+                WHEN SAFE_CAST(src.measurement AS INT64) = 16 THEN 'break'
+                WHEN SAFE_CAST(src.measurement AS INT64) = 32 THEN 'shot'
+                WHEN SAFE_CAST(src.measurement AS INT64) = 45 THEN 'without notice'
+                WHEN SAFE_CAST(src.measurement AS INT64) = 18 THEN 'maintenance'
+                WHEN SAFE_CAST(src.measurement AS INT64) = 5 THEN 'power cut'
+                WHEN SAFE_CAST(src.measurement AS INT64) = 19 THEN 'setting'
+                WHEN SAFE_CAST(src.measurement AS INT64) = 34 THEN 'mould'
+                WHEN SAFE_CAST(src.measurement AS INT64) = 33 THEN 'reset'
+                WHEN SAFE_CAST(src.measurement AS INT64) = 4 THEN 'manpower'
+                WHEN SAFE_CAST(src.measurement AS INT64) = 17 THEN 'no load'
+                ELSE NULL
+              END AS description
+            FROM `{REALTIME_MASTER_CATALOG_SOURCE}` AS src
+            CROSS JOIN shift_window AS w
+            WHERE src.publish_time >= w.shift_start_ts
+              AND src.publish_time < w.shift_end_ts
+          ),
+          latest_any AS (
+            SELECT *
+            FROM shift_catalog
+            QUALIFY ROW_NUMBER() OVER (
+              PARTITION BY device_id
+              ORDER BY publish_time DESC
+            ) = 1
+          ),
+          latest_m32 AS (
+            SELECT *
+            FROM shift_catalog
+            WHERE SAFE_CAST(measurement AS INT64) = 32
+            QUALIFY ROW_NUMBER() OVER (
+              PARTITION BY device_id
+              ORDER BY publish_time DESC
+            ) = 1
+          )
+        SELECT
+          mm.Machine_no AS machine_no,
+          CASE
+            WHEN SAFE_CAST(la.measurement AS INT64) = 32 THEN 'Running'
+            WHEN SAFE_CAST(la.value AS INT64) = 1 THEN 'Stopped'
+            WHEN la.description IS NOT NULL AND SAFE_CAST(la.value AS INT64) = 0 THEN 'Running'
+            ELSE 'Stopped'
+          END AS status,
+          COALESCE(NULLIF(CAST(l32.partNo AS STRING), ''), '-') AS part_no,
+          COALESCE(CAST(l32.value AS STRING), '-') AS quantity,
+          CASE
+            WHEN SAFE_CAST(la.measurement AS INT64) = 32 THEN '-'
+            WHEN la.description IS NOT NULL AND SAFE_CAST(la.value AS INT64) = 0 THEN '-'
+            ELSE COALESCE(CAST(la.description AS STRING), '-')
+          END AS idle_desc,
+          CASE
+            WHEN SAFE_CAST(la.measurement AS INT64) = 32 THEN NULL
+            WHEN la.description IS NOT NULL AND SAFE_CAST(la.value AS INT64) = 0 THEN NULL
+            ELSE
+              GREATEST(
+                0,
+                TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), CAST(la.publish_time AS TIMESTAMP), MINUTE)
+              )
+          END AS time_elapsed_minutes,
+          FORMAT_TIMESTAMP(
+            '%I:%M %p',
+            TIMESTAMP(la.publish_time),
+            'Asia/Kolkata'
+          ) AS last_updated_ist
+        FROM latest_any la
+        LEFT JOIN latest_m32 l32
+          ON l32.device_id = la.device_id
+        LEFT JOIN `{DIM_MACHINE_MAPPER_TABLE}` mm
+          ON mm.Device_ID = SAFE_CAST(la.device_id AS INT64)
+        WHERE 1=1
+    """
+    params = []
+    if unit and unit != "All":
+        query += " AND mm.Unit = @unit"
+        params.append(bigquery.ScalarQueryParameter("unit", "STRING", unit))
+    if department and department != "All":
+        query += " AND mm.Machine_Type = @department"
+        params.append(bigquery.ScalarQueryParameter("department", "STRING", department))
+    query += " ORDER BY mm.Machine_no"
+
+    job_config = bigquery.QueryJobConfig(query_parameters=params) if params else None
+    try:
+        result = bq_client.query(query, job_config=job_config).result()
+        rows = []
+        for row in result:
+            rows.append(
+                {
+                    "machine_no": row.get("machine_no"),
+                    "status": row.get("status"),
+                    "part_no": row.get("part_no") or "-",
+                    "quantity": row.get("quantity") or "-",
+                    "idle_desc": row.get("idle_desc") or "-",
+                    "time_elapsed_minutes": row.get("time_elapsed_minutes"),
+                    "last_updated_ist": row.get("last_updated_ist") or "-",
+                }
+            )
+        _cache_set(cache_key, rows)
+        return rows
+    except Exception as e:
+        app.logger.warning("BigQuery realtime (vw_master_catalog) query failed: %s", e)
+        return []
+
+
 class User(UserMixin):
     def __init__(self, id_, email, role="viewer", allowed_pages=None):
         self.id = id_
@@ -282,6 +430,17 @@ class User(UserMixin):
 @login_manager.user_loader
 def load_user(user_id):
     return User.get(user_id)
+
+
+def _user_has_ppc_access():
+    """Same rule as Department / PPC menu: admin, editor, or viewer with 'ppc' page."""
+    if not current_user.is_authenticated:
+        return False
+    role = getattr(current_user, "role", "") or ""
+    if role == "admin" or role == "editor":
+        return True
+    pages = getattr(current_user, "allowed_pages", None) or []
+    return "ppc" in pages
 
 
 def require_page(page_key):
@@ -321,6 +480,14 @@ def index():
     selected_unit = request.args.get("unitSlicer") or "All"
     selected_department = request.args.get("departmentSlicer") or "All"
 
+    # Realtime slicers must not affect History; keep them in separate query params.
+    selected_realtime_unit = request.args.get("realtimeUnitSlicer") or selected_unit
+    selected_realtime_department = request.args.get("realtimeDepartmentSlicer") or selected_department
+    if not selected_realtime_unit or selected_realtime_unit == "All":
+        selected_realtime_unit = UNIT_OPTIONS[0] if UNIT_OPTIONS else None
+    if not selected_realtime_department or selected_realtime_department == "All":
+        selected_realtime_department = DEPARTMENT_OPTIONS[0] if DEPARTMENT_OPTIONS else None
+
     machine_rows = fetch_machine_idle_rows(
         date_str=selected_date,
         shift=selected_shift,
@@ -332,6 +499,13 @@ def index():
         shift=selected_shift,
         unit=selected_unit,
         department=selected_department,
+    )
+
+    realtime_refresh = request.args.get("realtime_refresh") == "1"
+    realtime_rows = fetch_realtime_latest_rows(
+        unit=selected_realtime_unit,
+        department=selected_realtime_department,
+        bypass_cache=realtime_refresh,
     )
 
     # If no rows for chosen date (e.g. data is in 2026, yesterday is 2025), use latest date in table
@@ -353,19 +527,35 @@ def index():
             )
 
     highlights_filter = auth.get_user_preference(current_user.id, "highlightsFilter") or "bad"
+
+    plan_department_tabs = ("PDC", "FET", "CNC", "SEC")
+    plan_tab = (request.args.get("planTab") or "PDC").strip().upper()
+    if plan_tab not in plan_department_tabs:
+        plan_tab = "PDC"
+    plan_department_rows = []
+    if _user_has_ppc_access():
+        plan_department_rows = fetch_department_job_allocations(plan_tab)
+
     return render_template(
         "index.html",
         machine_rows=machine_rows,
         iot_rows=iot_rows,
+        realtime_rows=realtime_rows,
         selected_date=selected_date,
         selected_shift=selected_shift,
         selected_unit=selected_unit,
         selected_department=selected_department,
+        selected_realtime_unit=selected_realtime_unit,
+        selected_realtime_department=selected_realtime_department,
         shift_options=SHIFT_OPTIONS,
         unit_options=UNIT_OPTIONS,
         department_options=DEPARTMENT_OPTIONS,
         active_nav="production",
         highlights_filter=highlights_filter,
+        show_plan_tab=_user_has_ppc_access(),
+        plan_tab=plan_tab,
+        plan_department_tabs=plan_department_tabs,
+        plan_department_rows=plan_department_rows,
     )
 
 
@@ -414,6 +604,10 @@ PARTS_TABLE = "alubee-prod.alubee_production_marts.dim_component_mapper"
 MONTHLY_PLANNER_TABLE = "alubee-prod.alubee_production_marts.dim_monthly_planner"
 JOB_ALLOCATOR_TABLE = "alubee-prod.alubee_production_marts.fact_job_allocator"
 PLAN_CHANGE_REQUEST_TABLE = "alubee-prod.alubee_production_marts.fact_plan_change_request"
+REALTIME_LATEST_TABLE = "alubee-prod.alubee_production_marts.fact_realtime_latest"
+# Production dashboard Realtime tab reads current-shift rows from staging master catalog (not fact_realtime_latest).
+REALTIME_MASTER_CATALOG_SOURCE = "alubee-prod.alubee_production_staging.vw_master_catalog"
+DIM_MACHINE_MAPPER_TABLE = "alubee-prod.alubee_production_marts.dim_machine_mapper"
 
 
 def fetch_monthly_planner(plan_month: str | None = None, department: str | None = None):
@@ -1902,20 +2096,13 @@ def consumables():
 @app.route("/department")
 @login_required
 def department():
-    # Reuse PPC permission so existing PPC users can access this page.
+    """Legacy URL: Department view now lives under Production → Plan."""
     require_page("ppc")
     selected_tab = (request.args.get("tab") or "PDC").strip().upper()
     allowed_tabs = ("PDC", "FET", "CNC", "SEC")
     if selected_tab not in allowed_tabs:
         selected_tab = "PDC"
-    department_rows = fetch_department_job_allocations(selected_tab)
-    return render_template(
-        "department.html",
-        active_nav="department",
-        selected_tab=selected_tab,
-        department_tabs=allowed_tabs,
-        department_rows=department_rows,
-    )
+    return redirect(url_for("index", planTab=selected_tab) + "#plan-tab-pane")
 
 
 @app.route("/department/switch-request", methods=["POST"])
@@ -1925,7 +2112,7 @@ def department_switch_request():
     require_page("ppc")
     if bq_client is None:
         flash("BigQuery is not configured.", "danger")
-        return redirect(url_for("department"))
+        return redirect(url_for("index", planTab="PDC") + "#plan-tab-pane")
 
     machine_no = (request.form.get("machine_no") or "").strip()
     from_part_no = (request.form.get("from_part_no") or "").strip()
@@ -1937,11 +2124,11 @@ def department_switch_request():
 
     if not machine_no or not from_part_no or not to_part_no:
         flash("Invalid switch request data.", "danger")
-        return redirect(url_for("department", tab=selected_tab))
+        return redirect(url_for("index", planTab=selected_tab) + "#plan-tab-pane")
 
     if from_part_no == to_part_no:
         flash("Back Up plan must be different from primary plan.", "danger")
-        return redirect(url_for("department", tab=selected_tab))
+        return redirect(url_for("index", planTab=selected_tab) + "#plan-tab-pane")
 
     duplicate_query = f"""
         SELECT 1
@@ -1966,7 +2153,7 @@ def department_switch_request():
         )
         if duplicate_row is not None:
             flash("A pending switch request already exists for this machine and parts.", "warning")
-            return redirect(url_for("department", tab=selected_tab))
+            return redirect(url_for("index", planTab=selected_tab) + "#plan-tab-pane")
     except Exception as e:
         app.logger.warning("BigQuery duplicate switch request check failed: %s", e)
 
@@ -1990,7 +2177,7 @@ def department_switch_request():
         app.logger.warning("BigQuery insert switch request failed: %s", e)
         flash("Failed to raise switch request.", "danger")
 
-    return redirect(url_for("department", tab=selected_tab))
+    return redirect(url_for("index", planTab=selected_tab) + "#plan-tab-pane")
 
 
 @app.route("/ppc/switch-request/approve", methods=["POST"])
@@ -2325,5 +2512,4 @@ if __name__ == "__main__":
         conn.commit()
         conn.close()
     port = int(os.environ.get("PORT", 8080))
-    debug = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    app.run(host="0.0.0.0", port=port, debug=True)

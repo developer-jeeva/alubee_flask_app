@@ -701,6 +701,7 @@
         opt.disabled = isExcluded;
         opt.style.display = isExcluded ? 'none' : '';
       }
+      // If current selection is now excluded, clear it.
       if (pn && backupPartSelectEl.value === pn) {
         backupPartSelectEl.value = '';
         if (backupScheduleInputEl) backupScheduleInputEl.value = '';

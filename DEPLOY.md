@@ -14,11 +14,13 @@ This folder is set up to deploy **without** a service account JSON file in the r
 2. Find the **default compute service account** used by Cloud Run (e.g. `PROJECT_NUMBER-compute@developer.gserviceaccount.com`) or create a dedicated service account for this app.
 3. Grant that service account **BigQuery** permissions (e.g. **BigQuery Data Editor** and **BigQuery Job User**) so it can read/write your BigQuery datasets.
 
-## 2. Deploy from the `production` folder
+## 2. Deploy from the `Production` folder
 
-**Important:** You must build and deploy **from inside the production folder** so that `main.py`, `auth.py`, `templates/`, and `static/` are at the image root. Building from the repo root will cause "No module named 'main'" on Cloud Run.
+**Important:** You must build and deploy **from inside this `Production` folder** so that `main.py`, `auth.py`, `templates/`, and `static/` are at the image root. Building from the repo root will cause "No module named 'main'" on Cloud Run.
 
-From the **production** directory (this folder):
+After changing code in the **parent repo root**, sync into this folder (see **`SYNC_FROM_ROOT.md`**) before you build.
+
+From the **`Production`** directory (this folder):
 
 ```bash
 # Set your project and region
@@ -37,7 +39,7 @@ gcloud run deploy alubee-app \
 Or build with Docker and push to Artifact Registry, then deploy:
 
 ```bash
-cd production   # must be in production folder
+cd Production   # must be in Production folder (Windows path: same name as this directory)
 # Build (context is current dir so main.py is in /app)
 docker build -t gcr.io/$PROJECT_ID/alubee-app:latest .
 

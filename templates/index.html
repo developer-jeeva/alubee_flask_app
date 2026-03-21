@@ -27,6 +27,21 @@
 		body {
 			font-family: 'Montserrat', sans-serif !important;
 		}
+		/* Realtime header clock: Montserrat, label bold / value regular */
+		.realtime-time-display {
+			font-family: 'Montserrat', sans-serif;
+			font-size: 0.9375rem; /* 15px — readable next to Refresh */
+			line-height: 1.45;
+			color: #4a5568;
+		}
+		.realtime-time-display .realtime-time-label {
+			font-weight: 600;
+			margin-right: 0.35em;
+		}
+		.realtime-time-display .realtime-time-value {
+			font-weight: 400;
+			font-variant-numeric: tabular-nums;
+		}
 		#app-loading-overlay {
 			display: none;
 			position: fixed;
@@ -81,6 +96,7 @@
 			body.sidepanel-collapsed .nav-link { padding-left: 0.5rem; padding-right: 0.5rem; text-align: center; }
 			body.sidepanel-collapsed .nav-icon { margin: 0; display: block; }
 			body.sidepanel-collapsed .app-sidepanel-footer .nav-link { padding-left: 0.5rem; padding-right: 0.5rem; text-align: center; }
+			/* Inner toggle: show expand when collapsed, collapse when expanded */
 			.sidepanel-inner-icon-expand { display: none !important; }
 			body.sidepanel-collapsed .sidepanel-inner-icon-expand { display: block !important; }
 			body.sidepanel-collapsed .sidepanel-inner-icon-collapse { display: none !important; }
@@ -93,6 +109,28 @@
 		<div class="spinner" role="status" aria-hidden="true"></div>
 		<span class="loading-text">Please wait</span>
 	</div>
+	<script>
+		(function () {
+			var o = document.getElementById('app-loading-overlay');
+			function busy(on) {
+				if (!o) return;
+				if (on) {
+					o.classList.add('show');
+					o.setAttribute('aria-busy', 'true');
+				} else {
+					o.classList.remove('show');
+					o.setAttribute('aria-busy', 'false');
+				}
+			}
+			window.showAppLoading = function () { busy(true); };
+			window.hideAppLoading = function () { busy(false); };
+			busy(true);
+			window.addEventListener('load', function () { busy(false); });
+			window.addEventListener('pageshow', function (e) {
+				if (e.persisted) busy(false);
+			});
+		})();
+	</script>
 	<header class="app-header fixed-top">
 		<div class="app-header-inner">
 			<div class="container-fluid py-2">
@@ -260,7 +298,7 @@
 					<ul class="app-menu list-unstyled accordion" id="menu-accordion">
 						{% if is_admin or user_role == 'editor' or (user_role == 'viewer' and 'production' in allowed_pages) %}
 						<li class="nav-item">
-							<a class="nav-link {{ 'active' if active_nav|default('production') == 'production' else '' }}" href="{{ url_for('index') }}">
+							<a class="nav-link {{ 'active' if active_nav|default('production') == 'production' else '' }}" href="{{ url_for('index') }}#realtime-tab-pane">
 								<span class="nav-icon">
 									<svg width="1em" height="1em" viewBox="0 0 16 16" class="bi bi-house-door" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
 										<path fill-rule="evenodd" d="M7.646 1.146a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 .146.354v7a.5.5 0 0 1-.5.5H9.5a.5.5 0 0 1-.5-.5v-4H7v4a.5.5 0 0 1-.5.5H2a.5.5 0 0 1-.5-.5v-7a.5.5 0 0 1 .146-.354l6-6zM2.5 7.707V14H6v-4a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v4h3.5V7.707L8 2.207l-5.5 5.5z"/>
@@ -280,16 +318,6 @@
 									</svg>
 								</span>
 								<span class="nav-link-text">PPC</span>
-							</a>
-						</li>
-						<li class="nav-item">
-							<a class="nav-link {{ 'active' if active_nav|default('') == 'department' else '' }}" href="{{ url_for('department') }}">
-								<span class="nav-icon">
-									<svg width="1em" height="1em" viewBox="0 0 16 16" class="bi bi-diagram-3" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-										<path fill-rule="evenodd" d="M6.5 5.5a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 .5.5V7h1.5A1.5 1.5 0 0 1 12.5 8.5V10h.5A1.5 1.5 0 0 1 14.5 11.5v2A1.5 1.5 0 0 1 13 15h-2A1.5 1.5 0 0 1 9.5 13.5V12h-3v1.5A1.5 1.5 0 0 1 5 15H3a1.5 1.5 0 0 1-1.5-1.5v-2A1.5 1.5 0 0 1 3 10h.5V8.5A1.5 1.5 0 0 1 5 7h1.5V5.5zM5 8a.5.5 0 0 0-.5.5V10h2V8H5zm5 0v2h2V8.5a.5.5 0 0 0-.5-.5H10zM3 11a.5.5 0 0 0-.5.5v2A.5.5 0 0 0 3 14h2a.5.5 0 0 0 .5-.5v-2A.5.5 0 0 0 5 11H3zm8 0a.5.5 0 0 0-.5.5v2a.5.5 0 0 0 .5.5h2a.5.5 0 0 0 .5-.5v-2A.5.5 0 0 0 13 11h-2zM7.5 6v1h1V6h-1z"/>
-									</svg>
-								</span>
-								<span class="nav-link-text">Department</span>
 							</a>
 						</li>
 						{% endif %}
@@ -448,6 +476,7 @@
 		{% block content %}
 		<div class="app-content pt-3 p-md-3 p-lg-4">
 			<div class="container-xl">
+
 				<style>
 					#highlights-btn { border: 2px solid currentColor !important; }
 					#highlights-btn.btn-primary { border-color: rgba(255,255,255,0.5) !important; }
@@ -461,7 +490,7 @@
 						padding: 0.5rem 1rem 0.75rem 1rem;
 						box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 					}
-					body.sidepanel-collapsed #production-filter-pane { left: 72px; }
+					body.sidepanel-collapsed #production-filter-pane { left: 0; }
 					@media (max-width: 1199.98px) {
 						#production-filter-pane { left: 0; }
 					}
@@ -478,18 +507,37 @@
 				<div id="production-filter-pane" class="d-flex flex-wrap align-items-center justify-content-between gap-3">
 					<ul class="nav nav-tabs mb-0" id="productionTabs" role="tablist">
 						<li class="nav-item" role="presentation">
-							<button class="nav-link" id="realtime-tab" data-bs-toggle="tab" data-bs-target="#realtime-tab-pane" type="button" role="tab" aria-controls="realtime-tab-pane" aria-selected="false">
+							<button class="nav-link active" id="realtime-tab" data-bs-toggle="tab" data-bs-target="#realtime-tab-pane" type="button" role="tab" aria-controls="realtime-tab-pane" aria-selected="true">
 								Realtime
 							</button>
 						</li>
 						<li class="nav-item" role="presentation">
-							<button class="nav-link active" id="history-tab" data-bs-toggle="tab" data-bs-target="#history-tab-pane" type="button" role="tab" aria-controls="history-tab-pane" aria-selected="true">
+							<button class="nav-link" id="history-tab" data-bs-toggle="tab" data-bs-target="#history-tab-pane" type="button" role="tab" aria-controls="history-tab-pane" aria-selected="false">
 								History
 							</button>
 						</li>
+						{% if show_plan_tab|default(false) %}
+						<li class="nav-item" role="presentation">
+							<button class="nav-link" id="plan-tab" data-bs-toggle="tab" data-bs-target="#plan-tab-pane" type="button" role="tab" aria-controls="plan-tab-pane" aria-selected="false">
+								Plan
+							</button>
+						</li>
+						{% endif %}
 					</ul>
 					<form class="d-flex flex-wrap align-items-center gap-2 mb-0" id="global-filter-form" method="get">
-						<button type="button" class="btn btn-sm btn-outline-primary" id="highlights-btn" style="border-width: 2px;">Highlights</button>
+						<button type="button" class="btn btn-sm btn-outline-primary" id="highlights-btn" aria-label="Highlights">Highlights</button>
+						{% set realtime_unit_default = selected_realtime_unit if selected_realtime_unit in unit_options else unit_options[0] %}
+						{% set realtime_department_default = selected_realtime_department if selected_realtime_department in department_options else department_options[0] %}
+						<select class="form-select form-select-sm w-auto" id="realtimeUnitSlicer" name="realtimeUnitSlicer" style="min-width: 6rem;">
+							{% for u in unit_options %}
+								<option value="{{ u }}" {{ 'selected' if u == realtime_unit_default else '' }}>{{ u }}</option>
+							{% endfor %}
+						</select>
+						<select class="form-select form-select-sm w-auto" id="realtimeDepartmentSlicer" name="realtimeDepartmentSlicer" style="min-width: 7rem;">
+							{% for d in department_options %}
+								<option value="{{ d }}" {{ 'selected' if d == realtime_department_default else '' }}>{{ d }}</option>
+							{% endfor %}
+						</select>
 						<input type="date" class="form-control form-control-sm" name="dateFilter" id="dateFilter" aria-label="Select Date" value="{{ selected_date or '' }}" style="width: auto;">
 						<select class="form-select form-select-sm w-auto" name="unitSlicer" id="unitSlicer" style="min-width: 6rem;">
 							<option value="All" {{ 'selected' if selected_unit == 'All' else '' }}>All Units</option>
@@ -513,19 +561,73 @@
 				</div>
 
 				<div class="tab-content" id="productionTabsContent">
-					<div class="tab-pane fade" id="realtime-tab-pane" role="tabpanel" aria-labelledby="realtime-tab" tabindex="0">
+					<div class="tab-pane fade show active" id="realtime-tab-pane" role="tabpanel" aria-labelledby="realtime-tab" tabindex="0">
 						<div class="row g-4 mb-4">
 							<div class="col-12">
-								<div class="app-card app-card-settings shadow-sm p-4">
+								<div class="app-card app-card-settings app-card-table-elevated shadow-sm p-4">
 									<div class="app-card-body">
-										<p class="mb-0 text-muted">Realtime production view is under development.</p>
+										<div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+											<div class="realtime-time-display mb-0" aria-live="polite">
+												<span class="realtime-time-label">Time:</span><span id="realtime-ist-clock" class="realtime-time-value"></span>
+												<span class="visually-hidden"> India Standard Time, updates every second.</span>
+											</div>
+											<button type="button" class="btn btn-sm btn-outline-primary" id="realtime-refresh-btn" title="Fetch latest data">
+												<i class="fa-solid fa-arrows-rotate me-1" aria-hidden="true"></i>Refresh
+											</button>
+										</div>
+										<div class="table-responsive table-scroll-y">
+											<table class="table table-hover table-bordered mb-0 text-center" id="realtime-dashboard-table">
+												<thead class="table-light">
+													<tr>
+														<th class="cell text-center">Machine</th>
+														<th class="cell text-center">Status</th>
+														<th class="cell text-center">Part No</th>
+														<th class="cell text-center">Quantity</th>
+														<th class="cell text-center">Idle desc</th>
+														<th class="cell text-center">Time elapsed</th>
+														<th class="cell text-center">Last updated</th>
+													</tr>
+												</thead>
+												<tbody>
+													{% if realtime_rows %}
+														{% for r in realtime_rows %}
+															<tr data-status="{{ r.status }}">
+																<td class="cell text-center">{{ r.machine_no or '-' }}</td>
+																<td class="cell text-center">
+																	{% if r.status == 'Running' %}
+																		<span class="badge bg-success">Running</span>
+																	{% else %}
+																		<span class="badge bg-warning text-dark">Stopped</span>
+																	{% endif %}
+																</td>
+																<td class="cell text-center">{{ r.part_no or '-' }}</td>
+																<td class="cell text-center">{{ r.quantity or '-' }}</td>
+																<td class="cell text-center">{{ (r.idle_desc or '-')|sentence_case }}</td>
+																<td class="cell text-center">
+																	{% if r.status == 'Stopped' and r.time_elapsed_minutes is not none %}
+																		{{ r.time_elapsed_minutes|minutes_hm }}
+																	{% else %}
+																		-
+																	{% endif %}
+																</td>
+																<td class="cell text-center small text-nowrap">{{ r.last_updated_ist or '-' }}</td>
+															</tr>
+														{% endfor %}
+													{% else %}
+														<tr>
+															<td class="cell text-center" colspan="7">No realtime data.</td>
+														</tr>
+													{% endif %}
+												</tbody>
+											</table>
+										</div>
 									</div>
 								</div>
 							</div>
 						</div>
 					</div>
 
-					<div class="tab-pane fade show active" id="history-tab-pane" role="tabpanel" aria-labelledby="history-tab" tabindex="0">
+					<div class="tab-pane fade" id="history-tab-pane" role="tabpanel" aria-labelledby="history-tab" tabindex="0">
 						<div class="row g-4 mb-4">
 							<div class="col-12">
 								<h2 class="app-page-title production-section-title mb-3">Production</h2>
@@ -740,6 +842,114 @@
 						</div><!--//app-card-->
 					</div>
 				</div><!--//row-->
+					</div><!--//history-tab-pane-->
+
+					{% if show_plan_tab|default(false) %}
+					<div class="tab-pane fade" id="plan-tab-pane" role="tabpanel" aria-labelledby="plan-tab" tabindex="0">
+						<div class="row g-4 mb-4">
+							<div class="col-12">
+								<ul class="nav nav-tabs mb-3" id="planDepartmentTabs" role="tablist">
+									{% for ptab in plan_department_tabs %}
+									<li class="nav-item" role="presentation">
+										<a class="nav-link {% if plan_tab == ptab %}active{% endif %}"
+											href="{{ url_for('index') }}?planTab={{ ptab|urlencode }}{% for k, v in request.args.items() if k != 'planTab' %}&{{ k|urlencode }}={{ v|urlencode }}{% endfor %}#plan-tab-pane">
+											{{ ptab }}
+										</a>
+									</li>
+									{% endfor %}
+								</ul>
+								<div class="app-card app-card-settings app-card-table-elevated shadow-sm">
+									<div class="app-card-body p-4">
+										<div class="table-responsive">
+											<table class="table table-hover table-bordered mb-0">
+												<thead>
+													<tr>
+														<th class="cell">Machine No</th>
+														<th class="cell">Part No</th>
+														<th class="cell text-end">Plan</th>
+														<th class="cell text-end">Produced</th>
+														<th class="cell text-end">Allocated Shift</th>
+														<th class="cell">Job Created At</th>
+													</tr>
+												</thead>
+												<tbody>
+													{% if plan_department_rows %}
+														{% for row in plan_department_rows %}
+														<tr>
+															<td class="cell">
+																<a href="#"
+																	class="department-machine-link"
+																	data-machine-no="{{ row.machine_no or '' }}"
+																	data-part-no="{{ row.part_no or '' }}"
+																	data-plan="{{ row.plan if row.plan is not none else '' }}"
+																	data-back-up-part-no="{{ row.back_up_part_no or '' }}"
+																	data-back-up-schedule="{{ row.back_up_schedule if row.back_up_schedule is not none else '' }}"
+																	data-has-pending-switch="{{ '1' if row.has_pending_switch else '0' }}">
+																	{{ row.machine_no or '-' }}
+																</a>
+															</td>
+															<td class="cell">{{ row.part_no or '-' }}</td>
+															<td class="cell text-end">{{ row.plan if row.plan is not none else '-' }}</td>
+															<td class="cell text-end">{{ row.produced if row.produced is not none else '-' }}</td>
+															<td class="cell text-end">{{ row.shift_allocated if row.shift_allocated is not none else '-' }}</td>
+															<td class="cell">{{ row.job_created_at or '-' }}</td>
+														</tr>
+														{% endfor %}
+													{% else %}
+														<tr>
+															<td class="cell text-center" colspan="6">No allocated jobs found for {{ plan_tab }}.</td>
+														</tr>
+													{% endif %}
+												</tbody>
+											</table>
+										</div>
+									</div>
+								</div>
+							</div>
+						</div>
+					</div>
+
+					<div class="modal fade" id="departmentSwitchModal" tabindex="-1" aria-labelledby="departmentSwitchModalLabel" aria-hidden="true">
+						<div class="modal-dialog modal-dialog-centered">
+							<div class="modal-content">
+								<div class="modal-header">
+									<h5 class="modal-title" id="departmentSwitchModalLabel">Switch Plan</h5>
+									<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+								</div>
+								<div class="modal-body">
+									<div class="mb-3">
+										<div class="small text-muted">Machine No</div>
+										<div id="switch_machine_no" class="fw-semibold">-</div>
+									</div>
+									<div class="mb-3">
+										<div class="small text-muted">Primary plan and schedule</div>
+										<div id="switch_primary_info" class="fw-semibold">-</div>
+									</div>
+									<div class="mb-0">
+										<div class="small text-muted">Back Up plan and schedule</div>
+										<div id="switch_backup_info" class="fw-semibold">-</div>
+									</div>
+									<div class="mt-2 small text-warning d-none" id="switch_pending_hint">
+										A switch request is already pending for this machine.
+									</div>
+								</div>
+								<div class="modal-footer">
+									<form method="post" action="{{ url_for('department_switch_request') }}" class="m-0">
+										<input type="hidden" name="tab" value="{{ plan_tab }}">
+										<input type="hidden" name="machine_no" id="switch_form_machine_no">
+										<input type="hidden" name="from_part_no" id="switch_form_from_part_no">
+										<input type="hidden" name="to_part_no" id="switch_form_to_part_no">
+										<button type="submit" class="btn btn-primary" id="switch_submit_btn" disabled>Switch</button>
+									</form>
+								</div>
+							</div>
+						</div>
+					</div>
+					{% endif %}
+
+				</div><!--//productionTabsContent-->
+			</div><!--//container-xl-->
+		</div><!--//app-content-->
 
 		{% endblock %}
 				<!-- Javascript -->
@@ -759,48 +969,78 @@
 					})();
 				</script>
 
-				<!-- Loading overlay for all forms and all in-app navigation (every tab/page) -->
+				<!-- Loading overlay: forms + in-app links (showAppLoading defined in body for full-page loads) -->
 				<script>
-					(function () {
-						var overlay = document.getElementById('app-loading-overlay');
-						function showLoading() {
-							if (overlay) {
-								overlay.classList.add('show');
-								overlay.setAttribute('aria-busy', 'true');
+					document.addEventListener('DOMContentLoaded', function () {
+						try {
+							var cleanUrl = new URL(window.location.href);
+							if (cleanUrl.searchParams.get('realtime_refresh') === '1') {
+								cleanUrl.searchParams.delete('realtime_refresh');
+								history.replaceState(null, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
 							}
-						}
-						document.addEventListener('DOMContentLoaded', function () {
-							document.querySelectorAll('form').forEach(function (form) {
-								form.addEventListener('submit', function (e) {
-									showLoading();
-									e.preventDefault();
-									var f = form;
-									setTimeout(function () { f.submit(); }, 80);
-								});
-							});
-							document.querySelectorAll('a[href]').forEach(function (a) {
-								var href = (a.getAttribute('href') || '').trim();
-								if (!href || href === '#' || href.indexOf('javascript:') === 0 ||
-									href.indexOf('http://') === 0 || href.indexOf('https://') === 0) return;
-								a.addEventListener('click', function () { showLoading(); });
+						} catch (e) { /* ignore */ }
+						document.querySelectorAll('form').forEach(function (form) {
+							form.addEventListener('submit', function (e) {
+								if (typeof window.showAppLoading === 'function') window.showAppLoading();
+								e.preventDefault();
+								var f = form;
+								setTimeout(function () { f.submit(); }, 80);
 							});
 						});
-					})();
+						document.querySelectorAll('a[href]').forEach(function (a) {
+							var href = (a.getAttribute('href') || '').trim();
+							if (!href || href === '#' || href.indexOf('javascript:') === 0 ||
+								href.indexOf('http://') === 0 || href.indexOf('https://') === 0) return;
+							a.addEventListener('click', function () {
+								if (typeof window.showAppLoading === 'function') window.showAppLoading();
+							});
+						});
+						var refreshBtn = document.getElementById('realtime-refresh-btn');
+						if (refreshBtn) {
+							refreshBtn.addEventListener('click', function () {
+								if (typeof window.showAppLoading === 'function') window.showAppLoading();
+								var baseUrl = "{{ url_for('index') }}";
+								var params = new URLSearchParams(window.location.search);
+								params.set('realtime_refresh', '1');
+								window.location.href = baseUrl + '?' + params.toString() + '#realtime-tab-pane';
+							});
+						}
+						var clockEl = document.getElementById('realtime-ist-clock');
+						if (clockEl) {
+							function formatIST(d) {
+								var parts = new Intl.DateTimeFormat('en-GB', {
+									timeZone: 'Asia/Kolkata',
+									day: '2-digit', month: '2-digit', year: 'numeric',
+									hour: '2-digit', minute: '2-digit', second: '2-digit',
+									hour12: false
+								}).formatToParts(d);
+								var get = function (t) {
+									var p = parts.find(function (x) { return x.type === t; });
+									return p ? p.value : '';
+								};
+								return get('day') + '-' + get('month') + '-' + get('year') + ' ' +
+									get('hour') + ':' + get('minute') + ':' + get('second');
+							}
+							function tick() { clockEl.textContent = formatIST(new Date()); }
+							tick();
+							setInterval(tick, 1000);
+						}
+					});
 				</script>
 
 				<!-- Server-saved highlights preference (from Settings); used by Production Highlights button -->
 				<script>window.__highlightsFilter = "{{ highlights_filter|default('bad') }}";</script>
-				<!-- Highlights button and filter form -->
+				<!-- Filter form: auto-submit on change; Highlights button toggle -->
 				<script>
 					document.addEventListener('DOMContentLoaded', function () {
-						var highlightsBtn = document.getElementById('highlights-btn');
-						var form = document.getElementById('global-filter-form');
-						var dateFilter = document.getElementById('dateFilter');
-						var shiftSlicer = document.getElementById('shiftSlicer');
-						var unitSlicer = document.getElementById('unitSlicer');
-						var departmentSlicer = document.getElementById('departmentSlicer');
+						const form = document.getElementById('global-filter-form');
+						const dateFilter = document.getElementById('dateFilter');
+						const shiftSlicer = document.getElementById('shiftSlicer');
+						const unitSlicer = document.getElementById('unitSlicer');
+						const departmentSlicer = document.getElementById('departmentSlicer');
+						const highlightsBtn = document.getElementById('highlights-btn');
 
-						// Highlights: use server-saved setting first, then localStorage, then default
+						// Highlights button: use server-saved setting first, then localStorage, then default
 						function getHighlightsMode() { try { return window.__highlightsFilter || localStorage.getItem('highlightsFilter') || 'bad'; } catch (e) { return 'bad'; } }
 						if (highlightsBtn) {
 							highlightsBtn.addEventListener('click', function () {
@@ -878,15 +1118,235 @@
 										if (noDataRow) machineBody.appendChild(noDataRow);
 									}
 								}
+
+								// Realtime table: filter by mode (bad = Stopped, good = Running)
+								var realtimeTable = document.getElementById('realtime-dashboard-table');
+								if (realtimeTable) {
+									var realtimeBody = realtimeTable.querySelector('tbody');
+									var realtimeRows = [].slice.call(realtimeBody.querySelectorAll('tr[data-status]'));
+									var noDataRow = realtimeBody.querySelector('tr:not([data-status])');
+									if (isOn) {
+										var isBad = mode === 'bad';
+										var keep = realtimeRows.filter(function (tr) {
+											var status = (tr.getAttribute('data-status') || '').trim();
+											var isStopped = status === 'Stopped';
+											return isBad ? isStopped : !isStopped;
+										});
+										var hide = realtimeRows.filter(function (tr) { return keep.indexOf(tr) === -1; });
+										hide.forEach(function (tr) { tr.style.display = 'none'; });
+										keep.forEach(function (tr) { tr.style.display = ''; });
+										if (noDataRow && realtimeRows.length > 0) noDataRow.style.display = 'none';
+									} else {
+										realtimeRows.forEach(function (tr) { tr.style.display = ''; });
+										if (noDataRow) noDataRow.style.display = '';
+									}
+								}
 							});
 						}
 
-						// Auto-submit on any filter change
-						if (form) {
-							[dateFilter, shiftSlicer, unitSlicer, departmentSlicer].forEach(function (el) {
-								if (el) el.addEventListener('change', function () { form.submit(); });
+						// Production sub-tabs: Realtime | History | Plan — filter bar visibility
+						var hash = (window.location.hash || '').trim();
+						var bootUrlParams = new URLSearchParams(window.location.search);
+						var forcePlanFromQuery = bootUrlParams.has('planTab');
+						var isPlanTab = hash === '#plan-tab-pane' || forcePlanFromQuery;
+						var isHistoryTab = hash === '#history-tab-pane';
+						var realtimeTabBoot = document.getElementById('realtime-tab');
+						var historyTabBoot = document.getElementById('history-tab');
+						var planTabBoot = document.getElementById('plan-tab');
+
+						function setTopProductionFilters(mode) {
+							// mode: 'realtime' | 'history' | 'plan'
+							var form = document.getElementById('global-filter-form');
+							var historyIds = ['dateFilter', 'shiftSlicer', 'unitSlicer', 'departmentSlicer'];
+							var realtimeIds = ['realtimeUnitSlicer', 'realtimeDepartmentSlicer'];
+							if (mode === 'plan') {
+								if (form) form.style.display = 'none';
+								return;
+							}
+							if (form) form.style.display = '';
+							var isRealtime = mode === 'realtime';
+							historyIds.forEach(function (id) {
+								var el = document.getElementById(id);
+								if (el) el.style.display = isRealtime ? 'none' : '';
+							});
+							realtimeIds.forEach(function (id) {
+								var el = document.getElementById(id);
+								if (el) el.style.display = isRealtime ? '' : 'none';
 							});
 						}
+
+						if (typeof bootstrap !== 'undefined') {
+							if (isPlanTab && planTabBoot) {
+								bootstrap.Tab.getOrCreateInstance(planTabBoot).show();
+								if (window.location.hash !== '#plan-tab-pane') {
+									try {
+										history.replaceState(null, '', window.location.pathname + window.location.search + '#plan-tab-pane');
+									} catch (e) { /* ignore */ }
+								}
+							} else if (isHistoryTab && historyTabBoot) {
+								bootstrap.Tab.getOrCreateInstance(historyTabBoot).show();
+							} else if (realtimeTabBoot) {
+								bootstrap.Tab.getOrCreateInstance(realtimeTabBoot).show();
+								if (!isPlanTab && !isHistoryTab && (!hash || hash === '#')) {
+									try {
+										history.replaceState(null, '', window.location.pathname + window.location.search + '#realtime-tab-pane');
+									} catch (e) { /* ignore */ }
+								}
+							}
+						}
+
+						var realtimeTabEl = document.getElementById('realtime-tab');
+						var historyTabEl = document.getElementById('history-tab');
+						var planTabEl = document.getElementById('plan-tab');
+						if (realtimeTabEl) {
+							realtimeTabEl.addEventListener('shown.bs.tab', function () {
+								setTopProductionFilters('realtime');
+								window.location.hash = '#realtime-tab-pane';
+							});
+						}
+						if (historyTabEl) {
+							historyTabEl.addEventListener('shown.bs.tab', function () {
+								setTopProductionFilters('history');
+								window.location.hash = '#history-tab-pane';
+							});
+						}
+						if (planTabEl) {
+							planTabEl.addEventListener('shown.bs.tab', function () {
+								setTopProductionFilters('plan');
+								window.location.hash = '#plan-tab-pane';
+							});
+						}
+
+						if (isPlanTab) setTopProductionFilters('plan');
+						else if (isHistoryTab) setTopProductionFilters('history');
+						else setTopProductionFilters('realtime');
+
+						var baseUrl = "{{ url_for('index') }}";
+						var HISTORY_LS_KEY = "production_history_filters";
+						var REALTIME_LS_KEY = "production_realtime_filters";
+
+						function safeParseJSON(v) { try { return JSON.parse(v); } catch (e) { return null; } }
+
+						// If user refreshes with no query params, restore last used filters from localStorage
+						// (ensures refresh stays on the same tab + same filter values).
+						// Only on Production dashboard — other pages extend index.html but must not redirect to /.
+						(function restoreFiltersFromStorageOnce() {
+							try {
+								if (!document.getElementById('productionTabs')) return;
+								var params = new URLSearchParams(window.location.search);
+								var h = window.location.hash || '';
+								var isPlanCtx = h === '#plan-tab-pane' || params.has('planTab');
+								var shouldHistory = h === '#history-tab-pane';
+								var shouldRealtime = !shouldHistory && !isPlanCtx;
+								var storedRealtime = safeParseJSON(localStorage.getItem(REALTIME_LS_KEY));
+								var storedHistory = safeParseJSON(localStorage.getItem(HISTORY_LS_KEY));
+								var changed = false;
+
+								if (shouldRealtime && storedRealtime) {
+									if (!params.has('realtimeUnitSlicer') && storedRealtime.realtimeUnitSlicer) { params.set('realtimeUnitSlicer', storedRealtime.realtimeUnitSlicer); changed = true; }
+									if (!params.has('realtimeDepartmentSlicer') && storedRealtime.realtimeDepartmentSlicer) { params.set('realtimeDepartmentSlicer', storedRealtime.realtimeDepartmentSlicer); changed = true; }
+								}
+
+								if (shouldHistory && storedHistory) {
+									if (!params.has('dateFilter') && storedHistory.dateFilter) { params.set('dateFilter', storedHistory.dateFilter); changed = true; }
+									if (!params.has('shiftSlicer') && storedHistory.shiftSlicer) { params.set('shiftSlicer', storedHistory.shiftSlicer); changed = true; }
+									if (!params.has('unitSlicer') && storedHistory.unitSlicer) { params.set('unitSlicer', storedHistory.unitSlicer); changed = true; }
+									if (!params.has('departmentSlicer') && storedHistory.departmentSlicer) { params.set('departmentSlicer', storedHistory.departmentSlicer); changed = true; }
+								}
+
+								if (changed) {
+									if (shouldRealtime && typeof window.showAppLoading === 'function') window.showAppLoading();
+									var tail = '#realtime-tab-pane';
+									if (shouldHistory) tail = '#history-tab-pane';
+									else if (isPlanCtx) tail = '#plan-tab-pane';
+									window.location.href = baseUrl + '?' + params.toString() + tail;
+								}
+							} catch (e) {
+								// ignore
+							}
+						})();
+
+						var realtimeUnitSelect = document.getElementById('realtimeUnitSlicer');
+						var realtimeDepartmentSelect = document.getElementById('realtimeDepartmentSlicer');
+						if (realtimeUnitSelect && realtimeDepartmentSelect) {
+							function applyRealtimeFilters() {
+								if (typeof window.showAppLoading === 'function') window.showAppLoading();
+								// Update only realtime slicers so History slicers remain unchanged.
+								var params = new URLSearchParams(window.location.search);
+								params.set('realtimeUnitSlicer', realtimeUnitSelect.value);
+								params.set('realtimeDepartmentSlicer', realtimeDepartmentSelect.value);
+
+								localStorage.setItem(REALTIME_LS_KEY, JSON.stringify({
+									realtimeUnitSlicer: realtimeUnitSelect.value,
+									realtimeDepartmentSlicer: realtimeDepartmentSelect.value
+								}));
+
+								window.location.href = baseUrl + '?' + params.toString() + '#realtime-tab-pane';
+							}
+							realtimeUnitSelect.addEventListener('change', applyRealtimeFilters);
+							realtimeDepartmentSelect.addEventListener('change', applyRealtimeFilters);
+						}
+
+						function submitHistoryFilters() {
+							if (!dateFilter || !shiftSlicer || !unitSlicer || !departmentSlicer) return;
+							var params = new URLSearchParams(window.location.search);
+							params.set('dateFilter', dateFilter.value);
+							params.set('shiftSlicer', shiftSlicer.value);
+							params.set('unitSlicer', unitSlicer.value);
+							params.set('departmentSlicer', departmentSlicer.value);
+
+							localStorage.setItem(HISTORY_LS_KEY, JSON.stringify({
+								dateFilter: dateFilter.value,
+								shiftSlicer: shiftSlicer.value,
+								unitSlicer: unitSlicer.value,
+								departmentSlicer: departmentSlicer.value
+							}));
+
+							window.location.href = baseUrl + '?' + params.toString() + '#history-tab-pane';
+						}
+
+						[dateFilter, shiftSlicer, unitSlicer, departmentSlicer].forEach(function (el) {
+							if (el) el.addEventListener('change', submitHistoryFilters);
+						});
+
+						(function initDepartmentPlanSwitchModal() {
+							var links = document.querySelectorAll('.department-machine-link');
+							var modalEl = document.getElementById('departmentSwitchModal');
+							if (!modalEl || !links.length) return;
+							var modal = new bootstrap.Modal(modalEl);
+							var machineNoEl = document.getElementById('switch_machine_no');
+							var primaryInfoEl = document.getElementById('switch_primary_info');
+							var backupInfoEl = document.getElementById('switch_backup_info');
+							var formMachineNoEl = document.getElementById('switch_form_machine_no');
+							var formFromPartEl = document.getElementById('switch_form_from_part_no');
+							var formToPartEl = document.getElementById('switch_form_to_part_no');
+							var submitBtn = document.getElementById('switch_submit_btn');
+							var pendingHintEl = document.getElementById('switch_pending_hint');
+							if (!formMachineNoEl || !formFromPartEl || !formToPartEl || !submitBtn) return;
+							links.forEach(function (link) {
+								link.addEventListener('click', function (e) {
+									e.preventDefault();
+									var machineNo = this.getAttribute('data-machine-no') || '';
+									var partNo = this.getAttribute('data-part-no') || '';
+									var plan = this.getAttribute('data-plan') || '';
+									var backupPartNo = this.getAttribute('data-back-up-part-no') || '';
+									var backupSchedule = this.getAttribute('data-back-up-schedule') || '';
+									var hasPendingSwitch = (this.getAttribute('data-has-pending-switch') || '0') === '1';
+									var hasBackup = !!backupPartNo && String(backupSchedule).trim() !== '';
+									if (machineNoEl) machineNoEl.textContent = machineNo || '-';
+									if (primaryInfoEl) primaryInfoEl.textContent = partNo ? (partNo + ' / ' + (plan || '0')) : '-';
+									if (backupInfoEl) backupInfoEl.textContent = hasBackup ? (backupPartNo + ' / ' + backupSchedule) : '-';
+									formMachineNoEl.value = machineNo;
+									formFromPartEl.value = partNo;
+									formToPartEl.value = hasBackup ? backupPartNo : '';
+									submitBtn.disabled = (!hasBackup) || hasPendingSwitch;
+									if (pendingHintEl) {
+										pendingHintEl.classList.toggle('d-none', !hasPendingSwitch);
+									}
+									modal.show();
+								});
+							});
+						})();
 					});
 				</script>
 
