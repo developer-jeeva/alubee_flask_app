@@ -525,6 +525,44 @@ def require_page(page_key):
             abort(403)
 
 
+def _fetch_history_dashboard_rows():
+    """History tab date/shift/unit/dept filters plus machine idle + IoT rows (same logic as index)."""
+    yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+    selected_date = request.args.get("dateFilter") or yesterday
+    selected_shift = request.args.get("shiftSlicer") or "All"
+    selected_unit = request.args.get("unitSlicer") or "All"
+    selected_department = request.args.get("departmentSlicer") or "All"
+    machine_rows = fetch_machine_idle_rows(
+        date_str=selected_date,
+        shift=selected_shift,
+        unit=selected_unit,
+        department=selected_department,
+    )
+    iot_rows = fetch_iot_master_rows(
+        date_str=selected_date,
+        shift=selected_shift,
+        unit=selected_unit,
+        department=selected_department,
+    )
+    if not machine_rows and selected_date == yesterday:
+        max_date = _get_max_date_machine_idle()
+        if max_date and max_date != selected_date:
+            selected_date = max_date
+            machine_rows = fetch_machine_idle_rows(
+                date_str=selected_date,
+                shift=selected_shift,
+                unit=selected_unit,
+                department=selected_department,
+            )
+            iot_rows = fetch_iot_master_rows(
+                date_str=selected_date,
+                shift=selected_shift,
+                unit=selected_unit,
+                department=selected_department,
+            )
+    return selected_date, selected_shift, selected_unit, selected_department, machine_rows, iot_rows
+
+
 @app.context_processor
 def inject_nav_permissions():
     """Make allowed_pages and is_admin available in templates."""
@@ -542,12 +580,14 @@ def inject_nav_permissions():
 def index():
     require_page("production")
 
-    # Default date to yesterday when not provided
-    yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-    selected_date = request.args.get("dateFilter") or yesterday
-    selected_shift = request.args.get("shiftSlicer") or "All"
-    selected_unit = request.args.get("unitSlicer") or "All"
-    selected_department = request.args.get("departmentSlicer") or "All"
+    (
+        selected_date,
+        selected_shift,
+        selected_unit,
+        selected_department,
+        machine_rows,
+        iot_rows,
+    ) = _fetch_history_dashboard_rows()
 
     # Realtime slicers must not affect History; keep them in separate query params.
     selected_realtime_unit = request.args.get("realtimeUnitSlicer") or selected_unit
@@ -557,43 +597,12 @@ def index():
     if not selected_realtime_department or selected_realtime_department == "All":
         selected_realtime_department = DEPARTMENT_OPTIONS[0] if DEPARTMENT_OPTIONS else None
 
-    machine_rows = fetch_machine_idle_rows(
-        date_str=selected_date,
-        shift=selected_shift,
-        unit=selected_unit,
-        department=selected_department,
-    )
-    iot_rows = fetch_iot_master_rows(
-        date_str=selected_date,
-        shift=selected_shift,
-        unit=selected_unit,
-        department=selected_department,
-    )
-
     realtime_refresh = request.args.get("realtime_refresh") == "1"
     realtime_rows = fetch_realtime_latest_rows(
         unit=selected_realtime_unit,
         department=selected_realtime_department,
         bypass_cache=realtime_refresh,
     )
-
-    # If no rows for chosen date (e.g. data is in 2026, yesterday is 2025), use latest date in table
-    if not machine_rows and selected_date == yesterday:
-        max_date = _get_max_date_machine_idle()
-        if max_date and max_date != selected_date:
-            selected_date = max_date
-            machine_rows = fetch_machine_idle_rows(
-                date_str=selected_date,
-                shift=selected_shift,
-                unit=selected_unit,
-                department=selected_department,
-            )
-            iot_rows = fetch_iot_master_rows(
-                date_str=selected_date,
-                shift=selected_shift,
-                unit=selected_unit,
-                department=selected_department,
-            )
 
     highlights_filter = auth.get_user_preference(current_user.id, "highlightsFilter") or "bad"
 

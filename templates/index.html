@@ -629,8 +629,13 @@
 
 					<div class="tab-pane fade" id="history-tab-pane" role="tabpanel" aria-labelledby="history-tab" tabindex="0">
 						<div class="row g-4 mb-4">
-							<div class="col-12">
-								<h2 class="app-page-title production-section-title mb-3">Production</h2>
+							<div class="col-12 d-flex flex-wrap align-items-center justify-content-between gap-2">
+								<h2 class="app-page-title production-section-title mb-0">Production</h2>
+								<div class="d-flex flex-wrap gap-2" role="group" aria-label="Download production history report">
+									<button type="button" class="btn btn-sm btn-outline-secondary" data-history-export-table="production-dashboard-table" data-history-export-file-prefix="production-history" title="Download currently visible rows as CSV (opens in Microsoft Excel). Respects Highlights.">
+										<i class="fa-solid fa-file-excel me-1" aria-hidden="true"></i>Excel
+									</button>
+								</div>
 							</div>
 						</div>
 						<div class="row g-4 mb-4">
@@ -702,6 +707,11 @@
 						<div class="row g-3 mb-4 align-items-center justify-content-between">
 							<div class="col-auto">
 								<h2 class="app-page-title production-section-title mb-0">Idle Breakage</h2>
+							</div>
+							<div class="col-auto d-flex flex-wrap gap-2" role="group" aria-label="Download idle breakage report">
+								<button type="button" class="btn btn-sm btn-outline-secondary" data-history-export-table="machine-dashboard-table" data-history-export-file-prefix="idle-breakage-history" title="Download currently visible rows as CSV (opens in Microsoft Excel). Respects Highlights.">
+									<i class="fa-solid fa-file-excel me-1" aria-hidden="true"></i>Excel
+								</button>
 							</div>
 						</div><!--//row-->
 
@@ -1030,6 +1040,88 @@
 
 				<!-- Server-saved highlights preference (from Settings); used by Production Highlights button -->
 				<script>window.__highlightsFilter = "{{ highlights_filter|default('bad') }}";</script>
+				<!-- History Excel: client-side CSV from visible table rows (Highlights + no full-page navigation). -->
+				<script>
+				(function () {
+					function escapeCsvField(val) {
+						if (val == null || val === undefined) return '""';
+						var s = String(val).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+						if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+						return s;
+					}
+					function downloadCsv(filename, rows) {
+						var lines = rows.map(function (r) { return r.map(escapeCsvField).join(','); });
+						var blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+						var url = URL.createObjectURL(blob);
+						var a = document.createElement('a');
+						a.href = url;
+						a.download = filename;
+						a.rel = 'noopener';
+						document.body.appendChild(a);
+						a.click();
+						document.body.removeChild(a);
+						setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+					}
+					function rowVisible(tr) {
+						return window.getComputedStyle(tr).display !== 'none';
+					}
+					function isSparseNoDataRow(tr) {
+						var tds = tr.querySelectorAll('td');
+						return tds.length === 1 && tds[0].colSpan > 1;
+					}
+					function exportVisibleTableCsv(tableId, filePrefix) {
+						var table = document.getElementById(tableId);
+						if (!table) return;
+						var theadRows = table.querySelectorAll('thead tr');
+						if (!theadRows.length) return;
+						var headerTr = theadRows[theadRows.length - 1];
+						var headers = [].map.call(headerTr.querySelectorAll('th'), function (th) {
+							return th.innerText.replace(/\s+/g, ' ').trim();
+						});
+						var nCol = headers.length;
+						var out = [headers];
+						var bodyTrs = [].slice.call(table.querySelectorAll('tbody tr'));
+						var any = false;
+						bodyTrs.forEach(function (tr) {
+							if (!rowVisible(tr)) return;
+							if (isSparseNoDataRow(tr)) {
+								var msg = tr.innerText.replace(/\s+/g, ' ').trim();
+								if (msg) {
+									var row = [msg];
+									for (var i = 1; i < nCol; i++) row.push('');
+									out.push(row);
+									any = true;
+								}
+								return;
+							}
+							var tds = tr.querySelectorAll('td');
+							if (tds.length !== nCol) return;
+							out.push([].map.call(tds, function (td) {
+								return td.innerText.replace(/\s+/g, ' ').trim();
+							}));
+							any = true;
+						});
+						if (!any) {
+							var pad = ['(No visible rows to export)'];
+							for (var j = 1; j < nCol; j++) pad.push('');
+							out.push(pad);
+						}
+						var df = document.getElementById('dateFilter');
+						var d = (df && df.value) ? df.value : 'export';
+						downloadCsv(filePrefix + '_' + d + '.csv', out);
+					}
+					document.addEventListener('DOMContentLoaded', function () {
+						document.querySelectorAll('[data-history-export-table]').forEach(function (btn) {
+							btn.addEventListener('click', function () {
+								exportVisibleTableCsv(
+									btn.getAttribute('data-history-export-table'),
+									btn.getAttribute('data-history-export-file-prefix') || 'export'
+								);
+							});
+						});
+					});
+				})();
+				</script>
 				<!-- Filter form: auto-submit on change; Highlights button toggle -->
 				<script>
 					document.addEventListener('DOMContentLoaded', function () {
@@ -1049,7 +1141,7 @@
 								var isOn = this.classList.contains('btn-primary');
 								var mode = getHighlightsMode();
 
-								// History table: filter by mode (bad = warning/danger, good = success), sort accordingly
+								// History table: filter by mode (bad = danger/red only, good = success), sort accordingly
 								var historyTable = document.getElementById('production-dashboard-table');
 								if (historyTable) {
 									var historyBody = historyTable.querySelector('tbody');
@@ -1057,9 +1149,9 @@
 									if (isOn) {
 										var isBad = mode === 'bad';
 										var keep = historyRows.filter(function (tr) {
-											var hasBad = !!tr.querySelector('.badge.bg-warning, .badge.bg-danger');
+											var hasSevere = !!tr.querySelector('.badge.bg-danger');
 											var hasGood = !!tr.querySelector('.badge.bg-success');
-											return isBad ? hasBad : hasGood;
+											return isBad ? hasSevere : hasGood;
 										});
 										keep.sort(function (a, b) {
 											var va = parseFloat(a.getAttribute('data-rejection-percent')) || 0;
@@ -1082,7 +1174,7 @@
 									}
 								}
 
-								// Machine table: filter by mode (bad = usage < 90, good = usage >= 90), sort accordingly
+								// Machine table: filter by mode (bad = red badge only = usage < 80, good = usage >= 90), sort accordingly
 								var machineTable = document.getElementById('machine-dashboard-table');
 								if (machineTable) {
 									var machineBody = machineTable.querySelector('tbody');
@@ -1092,7 +1184,7 @@
 										var isBad = mode === 'bad';
 										var keep = machineRows.filter(function (tr) {
 											var u = parseFloat(tr.getAttribute('data-usage-percent')) || 100;
-											return isBad ? u < 90 : u >= 90;
+											return isBad ? u < 80 : u >= 90;
 										});
 										keep.sort(function (a, b) {
 											var va = parseFloat(a.getAttribute('data-usage-percent')) || 100;

@@ -8,7 +8,7 @@
 		<div class="row g-4 settings-section">
 			<div class="col-12 col-md-4">
 				<h3 class="section-title">Highlights</h3>
-				<div class="section-intro">Choose what the <strong>Highlights</strong> button shows on the Production page (History and Machine tables): problems only (yellow/red) or good items only (green).</div>
+				<div class="section-intro">Choose what the <strong>Highlights</strong> button shows on the Production page (History and Machine tables): severe problems only (red) or good items only (green).</div>
 			</div>
 			<div class="col-12 col-md-8">
 				<div class="app-card app-card-settings shadow-sm p-4">
@@ -17,7 +17,7 @@
 							<div class="form-check mb-3">
 								<input class="form-check-input" type="radio" name="highlightsFilter" id="highlights-filter-bad" value="bad" {{ 'checked' if (highlights_filter|default('bad')) == 'bad' else '' }}>
 								<label class="form-check-label" for="highlights-filter-bad">
-									<strong>Show problems only</strong> — yellow and red (warning/danger): high rejection %, low usage %
+									<strong>Show problems only</strong> — red (danger) only: highest rejection %, lowest usage % (&lt;80%)
 								</label>
 							</div>
 							<div class="form-check mb-3">
