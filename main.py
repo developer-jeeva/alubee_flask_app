@@ -814,6 +814,12 @@ REALTIME_LATEST_TABLE = "alubee-prod.alubee_production_marts.fact_realtime_lates
 REALTIME_MASTER_CATALOG_SOURCE = "alubee-prod.alubee_production_staging.vw_master_catalog"
 DIM_MACHINE_MAPPER_TABLE = "alubee-prod.alubee_production_marts.dim_machine_mapper"
 FACTS_REALTIME_LOGS_TABLE = "alubee-prod.alubee_production_marts.facts_realtime_logs"
+# IoT "Department" filter: CNC / VMC / PDC from dim_machine_mapper.Machine_no (substring); unit uses mm.Unit.
+_IOT_DEPARTMENT_FROM_MACHINE_NO_SQL = """CASE
+  WHEN UPPER(COALESCE(TRIM(CAST(mm.Machine_no AS STRING)), '')) LIKE '%CNC%' THEN 'CNC'
+  WHEN UPPER(COALESCE(TRIM(CAST(mm.Machine_no AS STRING)), '')) LIKE '%VMC%' THEN 'VMC'
+  ELSE 'PDC'
+END"""
 # IoT Realtime: (BigQuery field, single-token UI header). Row dicts use BQ keys; template shows labels.
 IOT_REALTIME_LOG_COLUMNS_UI = (
     ("publish_time_ist", "Timestamp"),
@@ -1111,32 +1117,38 @@ def _iot_realtime_log_cell(val):
 
 
 def fetch_iot_realtime_logs_distinct_filters():
-    """Distinct unit, machine_type (department), device_id for IoT realtime filters (recent data window)."""
+    """Distinct unit (dim_machine_mapper.Unit), department (CNC/VMC/PDC from mapper Machine_no), device_id."""
     if get_bq_client() is None:
         return [], [], []
-    cache_key = "iot_realtime_log_filters_v2"
+    cache_key = "iot_realtime_log_filters_v3"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
     units_sql = f"""
-        SELECT DISTINCT unit AS v
-        FROM `{FACTS_REALTIME_LOGS_TABLE}`
-        WHERE unit IS NOT NULL AND TRIM(CAST(unit AS STRING)) != ''
-          AND publish_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+        SELECT DISTINCT TRIM(CAST(mm.Unit AS STRING)) AS v
+        FROM `{FACTS_REALTIME_LOGS_TABLE}` f
+        INNER JOIN `{DIM_MACHINE_MAPPER_TABLE}` mm
+          ON mm.Device_ID = SAFE_CAST(f.device_id AS INT64)
+        WHERE mm.Unit IS NOT NULL AND TRIM(CAST(mm.Unit AS STRING)) != ''
+          AND f.publish_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
         ORDER BY 1
     """
     mt_sql = f"""
-        SELECT DISTINCT machine_type AS v
-        FROM `{FACTS_REALTIME_LOGS_TABLE}`
-        WHERE machine_type IS NOT NULL AND TRIM(CAST(machine_type AS STRING)) != ''
-          AND publish_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+        SELECT DISTINCT d.dept AS v
+        FROM (
+          SELECT {_IOT_DEPARTMENT_FROM_MACHINE_NO_SQL} AS dept
+          FROM `{FACTS_REALTIME_LOGS_TABLE}` f
+          LEFT JOIN `{DIM_MACHINE_MAPPER_TABLE}` mm
+            ON mm.Device_ID = SAFE_CAST(f.device_id AS INT64)
+          WHERE f.publish_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+        ) AS d
         ORDER BY 1
     """
     dev_sql = f"""
         SELECT DISTINCT device_id AS v
-        FROM `{FACTS_REALTIME_LOGS_TABLE}`
+        FROM `{FACTS_REALTIME_LOGS_TABLE}` f
         WHERE device_id IS NOT NULL AND TRIM(CAST(device_id AS STRING)) != ''
-          AND publish_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+          AND f.publish_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
         ORDER BY 1
     """
     try:
@@ -1166,52 +1178,54 @@ def fetch_iot_realtime_logs_table(
     limit = max(50, min(int(limit or 500), 2000))
 
     inner_where = f"""
-        FROM `{FACTS_REALTIME_LOGS_TABLE}`
+        FROM `{FACTS_REALTIME_LOGS_TABLE}` f
+        LEFT JOIN `{DIM_MACHINE_MAPPER_TABLE}` mm
+          ON mm.Device_ID = SAFE_CAST(f.device_id AS INT64)
         WHERE 1 = 1
-          AND publish_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+          AND f.publish_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
     """
     params = []
     if iot_unit and iot_unit != "All":
-        inner_where += " AND unit = @iot_unit"
+        inner_where += " AND TRIM(CAST(mm.Unit AS STRING)) = @iot_unit"
         params.append(bigquery.ScalarQueryParameter("iot_unit", "STRING", iot_unit))
     if iot_machine_type and iot_machine_type != "All":
-        inner_where += " AND machine_type = @iot_machine_type"
+        inner_where += f" AND ({_IOT_DEPARTMENT_FROM_MACHINE_NO_SQL}) = @iot_machine_type"
         params.append(bigquery.ScalarQueryParameter("iot_machine_type", "STRING", iot_machine_type))
     if iot_device and iot_device != "All":
-        inner_where += " AND CAST(device_id AS STRING) = @iot_device"
+        inner_where += " AND CAST(f.device_id AS STRING) = @iot_device"
         params.append(bigquery.ScalarQueryParameter("iot_device", "STRING", iot_device))
 
     base_cols = """
-            publish_time,
-            publish_time_ist,
-            device_id,
-            wifi_mac,
-            wifi_ip,
-            wifi_status,
-            wifi_rssi_dbm,
-            wifi_disconnect_count,
-            wifi_reconnect_count,
-            uptime_ms,
-            boot_count,
-            reset_reason,
-            scheduled_reset_morning_ok,
-            scheduled_restart_morning_ok,
-            scheduled_reset_evening_ok,
-            scheduled_restart_evening_ok,
-            free_heap_bytes,
-            min_free_heap_bytes,
-            loop_time_ms_avg,
-            loop_time_ms_max,
-            error_code,
-            error_source,
-            error_msg,
-            last_error_epoch,
-            error_count_today,
-            chip_temp_c,
-            i2c_lcd_0x27_present,
-            i2c_lcd_probe_fail_count,
-            i2c_garbage_suspected,
-            measurement
+            f.publish_time,
+            f.publish_time_ist,
+            f.device_id,
+            f.wifi_mac,
+            f.wifi_ip,
+            f.wifi_status,
+            f.wifi_rssi_dbm,
+            f.wifi_disconnect_count,
+            f.wifi_reconnect_count,
+            f.uptime_ms,
+            f.boot_count,
+            f.reset_reason,
+            f.scheduled_reset_morning_ok,
+            f.scheduled_restart_morning_ok,
+            f.scheduled_reset_evening_ok,
+            f.scheduled_restart_evening_ok,
+            f.free_heap_bytes,
+            f.min_free_heap_bytes,
+            f.loop_time_ms_avg,
+            f.loop_time_ms_max,
+            f.error_code,
+            f.error_source,
+            f.error_msg,
+            f.last_error_epoch,
+            f.error_count_today,
+            f.chip_temp_c,
+            f.i2c_lcd_0x27_present,
+            f.i2c_lcd_probe_fail_count,
+            f.i2c_garbage_suspected,
+            f.measurement
     """
     query = f"""
         WITH iot_rt_base AS (
