@@ -1,0 +1,632 @@
+{% extends "index.html" %}
+
+{% block content %}
+<style>
+  /* Full-width IoT area inside main content column */
+  .iot-page-fill {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding-left: 0.35rem;
+    padding-right: 0.35rem;
+  }
+  @media (min-width: 768px) {
+    .iot-page-fill {
+      padding-left: 0.75rem;
+      padding-right: 0.75rem;
+    }
+  }
+  .iot-shell {
+    width: 100%;
+    border-radius: 0.5rem;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08), 0 4px 14px rgba(15, 23, 42, 0.06);
+    background: #fff;
+    border: 1px solid #e8ecf1;
+    overflow: hidden;
+  }
+  .iot-shell .nav-tabs {
+    border-bottom: 1px solid #e2e8f0;
+    padding: 0.5rem 0.75rem 0;
+    gap: 0.25rem;
+    background: linear-gradient(180deg, #f8fafc 0%, #fff 55%);
+  }
+  .iot-shell .nav-tabs .nav-link {
+    border: 1px solid transparent;
+    border-radius: 0.375rem 0.375rem 0 0;
+    color: #64748b;
+    font-weight: 500;
+    font-size: 0.875rem;
+    padding: 0.5rem 1.15rem;
+  }
+  .iot-shell .nav-tabs .nav-link:hover {
+    color: #0f172a;
+    border-color: #e2e8f0 #e2e8f0 transparent;
+    background: rgba(255, 255, 255, 0.85);
+  }
+  .iot-shell .nav-tabs .nav-link.active {
+    color: #0f172a;
+    background: #fff;
+    border-color: #e2e8f0 #e2e8f0 #fff;
+    margin-bottom: -1px;
+  }
+  .iot-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.75rem 1rem;
+    padding: 0.85rem 1rem;
+    margin: 0.75rem 1rem 0;
+    width: 100%;
+    box-sizing: border-box;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.5rem;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 4px 12px rgba(15, 23, 42, 0.06);
+  }
+  .iot-filter-refresh {
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-right: 0.5rem;
+    padding-bottom: 0.15rem;
+  }
+  .iot-stat-cards .iot-stat-card {
+    border-radius: 0.65rem;
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 3px 10px rgba(15, 23, 42, 0.07);
+    transition: box-shadow 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+  }
+  .iot-stat-cards .iot-stat-card:hover {
+    box-shadow: 0 4px 6px rgba(15, 23, 42, 0.08), 0 10px 24px rgba(15, 23, 42, 0.1);
+    border-color: rgba(15, 23, 42, 0.16);
+    transform: translateY(-1px);
+  }
+  .iot-stat-cards .iot-stat-card .iot-stat-value {
+    font-size: 1.65rem;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+  }
+  .iot-stat-cards .iot-stat-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.88;
+  }
+  .iot-stat-icon-wrap {
+    width: 2.65rem;
+    height: 2.65rem;
+    border-radius: 0.55rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 1.05rem;
+  }
+  .iot-stat-tone-total {
+    background: #eef2ff;
+    color: #4338ca;
+  }
+  .iot-stat-tone-total .iot-stat-icon-wrap {
+    background: #c7d2fe;
+    color: #312e81;
+  }
+  .iot-stat-tone-total .iot-stat-label {
+    color: #4f46e5;
+  }
+  .iot-stat-tone-total .iot-stat-value {
+    color: #312e81;
+  }
+  .iot-stat-tone-running {
+    background: #ecfdf5;
+    color: #15803d;
+  }
+  .iot-stat-tone-running .iot-stat-icon-wrap {
+    background: #bbf7d0;
+    color: #166534;
+  }
+  .iot-stat-tone-running .iot-stat-label {
+    color: #16a34a;
+  }
+  .iot-stat-tone-running .iot-stat-value {
+    color: #14532d;
+  }
+  .iot-stat-tone-stopped {
+    background: #fff1f2;
+    color: #be123c;
+  }
+  .iot-stat-tone-stopped .iot-stat-icon-wrap {
+    background: #fecdd3;
+    color: #9f1239;
+  }
+  .iot-stat-tone-stopped .iot-stat-label {
+    color: #e11d48;
+  }
+  .iot-stat-tone-stopped .iot-stat-value {
+    color: #881337;
+  }
+  .iot-stat-tone-warnings {
+    background: #fffbeb;
+    color: #b45309;
+  }
+  .iot-stat-tone-warnings .iot-stat-icon-wrap {
+    background: #fde68a;
+    color: #92400e;
+  }
+  .iot-stat-tone-warnings .iot-stat-label {
+    color: #d97706;
+  }
+  .iot-stat-tone-warnings .iot-stat-value {
+    color: #78350f;
+  }
+  .iot-stat-tone-errors {
+    background: #fef2f2;
+    color: #b91c1c;
+  }
+  .iot-stat-tone-errors .iot-stat-icon-wrap {
+    background: #fecaca;
+    color: #991b1b;
+  }
+  .iot-stat-tone-errors .iot-stat-label {
+    color: #dc2626;
+  }
+  .iot-stat-tone-errors .iot-stat-value {
+    color: #7f1d1d;
+  }
+  .iot-rt-scroll {
+    width: auto;
+    max-height: calc(100vh - 200px);
+    min-height: 240px;
+    margin: 0.75rem 1rem 1rem;
+    overflow: auto;
+    overscroll-behavior: contain;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.5rem;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 4px 14px rgba(15, 23, 42, 0.07);
+    box-sizing: border-box;
+  }
+  /* Column widths set per-col by script: time col = max time width; others = min(content, that cap) */
+  .iot-rt-table {
+    --iot-sticky-col1-w: 160px;
+    --iot-sticky-col2-w: 72px;
+    table-layout: fixed;
+    margin-bottom: 0;
+    font-size: 0.78rem;
+    border-collapse: separate;
+    border-spacing: 0;
+    background: #fff;
+    box-sizing: border-box;
+  }
+  /* Freeze Timestamp, Device, and Status on horizontal scroll */
+  .iot-rt-table thead th.iot-rt-sticky-1 {
+    left: 0;
+    z-index: 6;
+    box-shadow: 0 1px 0 #e2e8f0, 3px 0 8px -3px rgba(15, 23, 42, 0.12);
+  }
+  .iot-rt-table thead th.iot-rt-sticky-2 {
+    left: var(--iot-sticky-col1-w, 160px);
+    z-index: 5;
+    box-shadow: 0 1px 0 #e2e8f0, 3px 0 8px -3px rgba(15, 23, 42, 0.1);
+  }
+  .iot-rt-table thead th.iot-rt-sticky-3 {
+    left: calc(var(--iot-sticky-col1-w, 160px) + var(--iot-sticky-col2-w, 72px));
+    z-index: 4;
+    box-shadow: 0 1px 0 #e2e8f0, 3px 0 8px -3px rgba(15, 23, 42, 0.09);
+  }
+  .iot-rt-table tbody td.iot-rt-sticky-1,
+  .iot-rt-table tbody td.iot-rt-sticky-2,
+  .iot-rt-table tbody td.iot-rt-sticky-3 {
+    position: sticky;
+    box-shadow: 3px 0 6px -3px rgba(15, 23, 42, 0.07);
+  }
+  .iot-rt-table tbody td.iot-rt-sticky-1 {
+    left: 0;
+    z-index: 5;
+    background: #fff;
+  }
+  .iot-rt-table tbody td.iot-rt-sticky-2 {
+    left: var(--iot-sticky-col1-w, 160px);
+    z-index: 4;
+    background: #fff;
+  }
+  .iot-rt-table tbody td.iot-rt-sticky-3 {
+    left: calc(var(--iot-sticky-col1-w, 160px) + var(--iot-sticky-col2-w, 72px));
+    z-index: 3;
+    background: #fff;
+  }
+  .iot-rt-table tbody tr:nth-child(even) td.iot-rt-sticky-1,
+  .iot-rt-table tbody tr:nth-child(even) td.iot-rt-sticky-2,
+  .iot-rt-table tbody tr:nth-child(even) td.iot-rt-sticky-3:not(.iot-rt-status-running):not(.iot-rt-status-stopped) {
+    background: #fcfcfd;
+  }
+  .iot-rt-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #f1f5f9;
+    color: #334155;
+    font-weight: 600;
+    border-bottom: 2px solid #e2e8f0;
+    box-shadow: 0 1px 0 #e2e8f0;
+    padding: 0.45rem 0.3rem;
+    vertical-align: top;
+    box-sizing: border-box;
+  }
+  .iot-rt-table thead th.iot-col-time,
+  .iot-rt-table tbody td.iot-col-time {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+  /* Column titles stay on one line; body cells may still wrap long values */
+  .iot-rt-table thead th.iot-col-wrap {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    overflow-wrap: normal;
+    word-break: normal;
+    hyphens: none;
+  }
+  .iot-rt-table tbody td.iot-col-wrap {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    hyphens: auto;
+  }
+  .iot-rt-table tbody td {
+    padding: 0.45rem 0.3rem;
+    border-color: #eef2f6;
+    vertical-align: top;
+  }
+  .iot-rt-table td.iot-rt-empty {
+    width: auto;
+    max-width: none;
+    white-space: normal;
+  }
+  .iot-rt-table tbody tr:nth-child(even) {
+    background: #fcfcfd;
+  }
+  .iot-rt-table tbody tr:hover {
+    background: #f0f9ff !important;
+  }
+  /* Severity: abnormal = red, warning = yellow (server sets __iot_cell_levels__) */
+  .iot-rt-table tbody td.iot-rt-cell-error {
+    background: #fee2e2;
+    color: #7f1d1d;
+  }
+  .iot-rt-table tbody td.iot-rt-cell-warn {
+    background: #fef9c3;
+    color: #713f12;
+  }
+  .iot-rt-table tbody tr:nth-child(even) td.iot-rt-cell-error {
+    background: #fecaca;
+  }
+  .iot-rt-table tbody tr:nth-child(even) td.iot-rt-cell-warn {
+    background: #fef08a;
+  }
+  .iot-rt-table tbody td.iot-rt-sticky-1.iot-rt-cell-error,
+  .iot-rt-table tbody td.iot-rt-sticky-2.iot-rt-cell-error,
+  .iot-rt-table tbody td.iot-rt-sticky-3.iot-rt-cell-error {
+    background: #fee2e2;
+  }
+  .iot-rt-table tbody td.iot-rt-sticky-1.iot-rt-cell-warn,
+  .iot-rt-table tbody td.iot-rt-sticky-2.iot-rt-cell-warn,
+  .iot-rt-table tbody td.iot-rt-sticky-3.iot-rt-cell-warn {
+    background: #fef9c3;
+  }
+  .iot-rt-table tbody tr:nth-child(even) td.iot-rt-sticky-1.iot-rt-cell-error,
+  .iot-rt-table tbody tr:nth-child(even) td.iot-rt-sticky-2.iot-rt-cell-error,
+  .iot-rt-table tbody tr:nth-child(even) td.iot-rt-sticky-3.iot-rt-cell-error {
+    background: #fecaca;
+  }
+  .iot-rt-table tbody tr:nth-child(even) td.iot-rt-sticky-1.iot-rt-cell-warn,
+  .iot-rt-table tbody tr:nth-child(even) td.iot-rt-sticky-2.iot-rt-cell-warn,
+  .iot-rt-table tbody tr:nth-child(even) td.iot-rt-sticky-3.iot-rt-cell-warn {
+    background: #fef08a;
+  }
+  .iot-rt-table tbody tr:hover td.iot-rt-cell-error {
+    background: #fca5a5 !important;
+  }
+  .iot-rt-table tbody tr:hover td.iot-rt-cell-warn {
+    background: #facc15 !important;
+  }
+  .iot-rt-table tbody tr:hover td.iot-rt-sticky-1:not(.iot-rt-cell-error):not(.iot-rt-cell-warn):not(.iot-rt-status-running):not(.iot-rt-status-stopped),
+  .iot-rt-table tbody tr:hover td.iot-rt-sticky-2:not(.iot-rt-cell-error):not(.iot-rt-cell-warn):not(.iot-rt-status-running):not(.iot-rt-status-stopped),
+  .iot-rt-table tbody tr:hover td.iot-rt-sticky-3:not(.iot-rt-cell-error):not(.iot-rt-cell-warn):not(.iot-rt-status-running):not(.iot-rt-status-stopped) {
+    background: #f0f9ff !important;
+  }
+  .iot-rt-table tbody td.iot-rt-status-running {
+    background: #dcfce7;
+    color: #166534;
+    font-weight: 600;
+  }
+  .iot-rt-table tbody td.iot-rt-status-stopped {
+    background: #fee2e2;
+    color: #991b1b;
+    font-weight: 600;
+  }
+  .iot-rt-table tbody tr:nth-child(even) td.iot-rt-status-running {
+    background: #bbf7d0;
+  }
+  .iot-rt-table tbody tr:nth-child(even) td.iot-rt-status-stopped {
+    background: #fecaca;
+  }
+  .iot-rt-table tbody tr:hover td.iot-rt-status-running {
+    background: #86efac !important;
+  }
+  .iot-rt-table tbody tr:hover td.iot-rt-status-stopped {
+    background: #fca5a5 !important;
+  }
+  .iot-history-pane {
+    padding: 1.25rem 1rem;
+  }
+</style>
+<div class="app-content pt-2 pb-3 p-md-3 iot-page-fill">
+  <div class="container-fluid px-0">
+    <div class="iot-shell">
+      <ul class="nav nav-tabs mb-0" id="iotTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+          <a
+            class="nav-link {% if iot_tab|default('realtime') == 'realtime' %}active{% endif %}"
+            href="{{ url_for('iot', tab='realtime', iot_unit=iot_unit|default('All'), iot_machine_type=iot_machine_type|default('All'), iot_device=iot_device|default('All')) }}"
+            role="tab"
+            {% if iot_tab|default('realtime') == 'realtime' %}aria-current="page"{% endif %}
+          >Realtime</a>
+        </li>
+        <li class="nav-item" role="presentation">
+          <a
+            class="nav-link {% if iot_tab|default('realtime') == 'history' %}active{% endif %}"
+            href="{{ url_for('iot', tab='history', iot_unit=iot_unit|default('All'), iot_machine_type=iot_machine_type|default('All'), iot_device=iot_device|default('All')) }}"
+            role="tab"
+            {% if iot_tab|default('realtime') == 'history' %}aria-current="page"{% endif %}
+          >History</a>
+        </li>
+      </ul>
+
+      {% if iot_tab|default('realtime') == 'history' %}
+        <div class="iot-history-pane border-top">
+          <p class="text-muted mb-0 small">History: last readings, events, and trends by device and time range (data loads here).</p>
+        </div>
+      {% else %}
+        {% if not bq_iot_available|default(true) %}
+          <div class="px-3 py-2 border-top bg-light">
+            <p class="text-warning small mb-0">BigQuery is not configured; table data cannot load.</p>
+          </div>
+        {% endif %}
+        <form method="get" action="{{ url_for('iot') }}" class="iot-filter-bar">
+          <input type="hidden" name="tab" value="realtime">
+          <div>
+            <label for="iot_unit" class="form-label small text-muted mb-0">Unit</label>
+            <select class="form-select form-select-sm" id="iot_unit" name="iot_unit" style="min-width: 9rem;">
+              <option value="All" {% if (iot_unit|default('All')) == 'All' %}selected{% endif %}>All</option>
+              {% for u in iot_unit_options|default([]) %}
+                <option value="{{ u }}" {% if (iot_unit|default('All')) == u %}selected{% endif %}>{{ u }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label for="iot_machine_type" class="form-label small text-muted mb-0">Department</label>
+            <select class="form-select form-select-sm" id="iot_machine_type" name="iot_machine_type" style="min-width: 9rem;">
+              <option value="All" {% if (iot_machine_type|default('All')) == 'All' %}selected{% endif %}>All</option>
+              {% for m in iot_machine_type_options|default([]) %}
+                <option value="{{ m }}" {% if (iot_machine_type|default('All')) == m %}selected{% endif %}>{{ m }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label for="iot_device" class="form-label small text-muted mb-0">Devices</label>
+            <select class="form-select form-select-sm" id="iot_device" name="iot_device" style="min-width: 10rem;">
+              <option value="All" {% if (iot_device|default('All')) == 'All' %}selected{% endif %}>All</option>
+              {% for d in iot_device_options|default([]) %}
+                <option value="{{ d }}" {% if (iot_device|default('All')) == d %}selected{% endif %}>{{ d }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <button type="submit" class="btn btn-sm btn-primary px-3">Apply</button>
+          </div>
+          <div class="iot-filter-refresh ms-auto small text-end align-self-end">
+            <span class="text-muted">Last refresh:</span>
+            <span class="fw-semibold text-body ms-1">{{ iot_last_refresh_display|default('—') }}</span>
+          </div>
+        </form>
+        {% set s = iot_summary_stats|default({'total': 0, 'running': 0, 'stopped': 0, 'warnings': 0, 'errors': 0}) %}
+        <div class="iot-stat-cards row row-cols-2 row-cols-md-3 row-cols-xl-5 g-2 px-3 py-3 border-top bg-white">
+          <div class="col">
+            <div class="card h-100 iot-stat-card iot-stat-tone-total">
+              <div class="card-body d-flex align-items-center gap-3 py-3 px-3">
+                <div class="iot-stat-icon-wrap" aria-hidden="true"><i class="fa-solid fa-server"></i></div>
+                <div class="min-w-0 flex-grow-1">
+                  <div class="iot-stat-label">Total</div>
+                  <div class="iot-stat-value">{{ s.total }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col">
+            <div class="card h-100 iot-stat-card iot-stat-tone-running">
+              <div class="card-body d-flex align-items-center gap-3 py-3 px-3">
+                <div class="iot-stat-icon-wrap" aria-hidden="true"><i class="fa-solid fa-play-circle"></i></div>
+                <div class="min-w-0 flex-grow-1">
+                  <div class="iot-stat-label">Running</div>
+                  <div class="iot-stat-value">{{ s.running }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col">
+            <div class="card h-100 iot-stat-card iot-stat-tone-stopped">
+              <div class="card-body d-flex align-items-center gap-3 py-3 px-3">
+                <div class="iot-stat-icon-wrap" aria-hidden="true"><i class="fa-solid fa-stop-circle"></i></div>
+                <div class="min-w-0 flex-grow-1">
+                  <div class="iot-stat-label">Stopped</div>
+                  <div class="iot-stat-value">{{ s.stopped }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col">
+            <div class="card h-100 iot-stat-card iot-stat-tone-warnings">
+              <div class="card-body d-flex align-items-center gap-3 py-3 px-3">
+                <div class="iot-stat-icon-wrap" aria-hidden="true"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                <div class="min-w-0 flex-grow-1">
+                  <div class="iot-stat-label">Warnings</div>
+                  <div class="iot-stat-value">{{ s.warnings }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col">
+            <div class="card h-100 iot-stat-card iot-stat-tone-errors">
+              <div class="card-body d-flex align-items-center gap-3 py-3 px-3">
+                <div class="iot-stat-icon-wrap" aria-hidden="true"><i class="fa-solid fa-circle-exclamation"></i></div>
+                <div class="min-w-0 flex-grow-1">
+                  <div class="iot-stat-label">Errors</div>
+                  <div class="iot-stat-value">{{ s.errors }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="iot-rt-scroll">
+          <table
+            class="iot-rt-table table table-sm table-hover align-middle mb-0"
+            data-iot-sync-cols="1"
+            style="--iot-cols: {{ (iot_realtime_log_columns|default([]))|length or 40 }};"
+          >
+            <colgroup>
+              {% for bq_key, label in iot_realtime_log_columns|default([]) %}
+                <col />
+              {% endfor %}
+            </colgroup>
+            <thead>
+              <tr>
+                {% for bq_key, label in iot_realtime_log_columns|default([]) %}
+                  <th scope="col" class="{% if bq_key == 'publish_time_ist' %}iot-col-time{% else %}iot-col-wrap{% endif %}{% if loop.index0 == 0 %} iot-rt-sticky-1{% elif loop.index0 == 1 %} iot-rt-sticky-2{% elif bq_key == 'iot_status' %} iot-rt-sticky-3{% endif %}" title="{{ bq_key }}">{{ label }}</th>
+                {% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in iot_realtime_rows|default([]) %}
+                <tr>
+                  {% for bq_key, label in iot_realtime_log_columns|default([]) %}
+                    {% set cell = row[bq_key] %}
+                    {% set sev = row.get('__iot_cell_levels__', {}).get(bq_key, '') %}
+                    <td class="{% if bq_key == 'publish_time_ist' %}iot-col-time{% else %}iot-col-wrap{% endif %}{% if loop.index0 == 0 %} iot-rt-sticky-1{% elif loop.index0 == 1 %} iot-rt-sticky-2{% elif bq_key == 'iot_status' %} iot-rt-sticky-3{% endif %}{% if bq_key == 'iot_status' %}{% if (cell|string)|trim == 'Running' %} iot-rt-status-running{% elif (cell|string)|trim == 'Stopped' %} iot-rt-status-stopped{% endif %}{% elif sev == 'error' %} iot-rt-cell-error{% elif sev == 'warn' %} iot-rt-cell-warn{% endif %}">{{ cell }}</td>
+                  {% endfor %}
+                </tr>
+              {% else %}
+                <tr>
+                  <td colspan="{{ (iot_realtime_log_columns|default([]))|length or 1 }}" class="iot-rt-empty text-muted small text-center py-4">No rows match the current filters.</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  function measureTextW(text, refEl) {
+    var span = document.createElement('span');
+    span.textContent = text;
+    span.style.cssText = 'position:absolute;left:-99999px;top:0;white-space:nowrap;visibility:hidden;pointer-events:none;';
+    if (refEl && refEl !== document) {
+      var cs = window.getComputedStyle(refEl);
+      span.style.fontSize = cs.fontSize;
+      span.style.fontFamily = cs.fontFamily;
+      span.style.fontWeight = cs.fontWeight;
+      span.style.letterSpacing = cs.letterSpacing;
+    }
+    document.body.appendChild(span);
+    var w = span.getBoundingClientRect().width;
+    span.remove();
+    return w;
+  }
+  function measureCellNoWrap(cell) {
+    if (!cell) return 0;
+    var clone = cell.cloneNode(true);
+    clone.style.cssText =
+      'position:absolute;left:-99999px;top:0;visibility:hidden;white-space:nowrap;width:auto;max-width:none;height:auto;pointer-events:none;';
+    document.body.appendChild(clone);
+    var w = Math.ceil(clone.getBoundingClientRect().width);
+    clone.remove();
+    return w;
+  }
+  function syncIotRtColWidth() {
+    var table = document.querySelector('.iot-rt-table[data-iot-sync-cols="1"]');
+    if (!table) return;
+    var cols = table.querySelectorAll('colgroup col');
+    var n = cols.length;
+    if (!n) return;
+
+    var thTime = table.querySelector('thead th.iot-col-time');
+    var ref = thTime || table.querySelector('td.iot-col-time') || table;
+    var maxTime = 0;
+    var probe = '2099-12-31 23:59:59';
+    maxTime = Math.max(maxTime, measureTextW(probe, ref !== table ? ref : null));
+    table.querySelectorAll('th.iot-col-time, td.iot-col-time').forEach(function (el) {
+      var t = (el.textContent || '').trim().replace(/\s+/g, ' ');
+      if (t) maxTime = Math.max(maxTime, measureTextW(t, el));
+    });
+    var extra = 12;
+    var padRef = thTime || table.querySelector('tbody td.iot-col-wrap') || ref;
+    if (padRef && padRef !== table) {
+      var c = window.getComputedStyle(padRef);
+      extra = (parseFloat(c.paddingLeft) || 0) + (parseFloat(c.paddingRight) || 0) + 8;
+    }
+    var W_cap = Math.ceil(maxTime) + extra;
+    W_cap = Math.min(Math.max(W_cap, 104), 320);
+
+    var timeIdx = thTime ? thTime.cellIndex : 0;
+    var headerCells = table.querySelectorAll('thead tr th');
+    var minCol = 44;
+    var widths = [];
+    var j;
+    for (j = 0; j < n; j++) {
+      if (j === timeIdx) {
+        widths[j] = W_cap;
+        continue;
+      }
+      var maxNat = 0;
+      var th = headerCells[j];
+      if (th) maxNat = Math.max(maxNat, measureCellNoWrap(th));
+      table.querySelectorAll('tbody tr').forEach(function (tr) {
+        var td = tr.cells[j];
+        if (!td || td.classList.contains('iot-rt-empty')) return;
+        maxNat = Math.max(maxNat, measureCellNoWrap(td));
+      });
+      widths[j] = Math.max(minCol, Math.min(maxNat, W_cap));
+    }
+
+    var total = 0;
+    for (j = 0; j < n; j++) {
+      cols[j].style.width = widths[j] + 'px';
+      total += widths[j];
+    }
+    table.style.width = total + 'px';
+    table.style.minWidth = total + 'px';
+    if (widths.length > 0) {
+      table.style.setProperty('--iot-sticky-col1-w', widths[0] + 'px');
+    }
+    if (widths.length > 1) {
+      table.style.setProperty('--iot-sticky-col2-w', widths[1] + 'px');
+    }
+  }
+  function run() {
+    syncIotRtColWidth();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run);
+  else run();
+  window.addEventListener('resize', function () {
+    clearTimeout(window.__iotRtSyncT);
+    window.__iotRtSyncT = setTimeout(syncIotRtColWidth, 150);
+  });
+})();
+</script>
+{% endblock %}

@@ -321,6 +321,18 @@
 							</a>
 						</li>
 						{% endif %}
+						{% if is_admin or user_role == 'editor' or (user_role == 'viewer' and ('iot' in allowed_pages or 'ppc' in allowed_pages)) %}
+						<li class="nav-item">
+							<a class="nav-link {{ 'active' if active_nav|default('') == 'iot' else '' }}" href="{{ url_for('iot') }}">
+								<span class="nav-icon">
+									<svg width="1em" height="1em" viewBox="0 0 16 16" class="bi bi-wifi" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+										<path d="M15.384 6.115a.485.485 0 0 0-.047-.736A12.444 12.444 0 0 0 8 3C5.259 3 2.723 3.882.663 5.379a.485.485 0 0 0-.048.736c.028.04.06.078.098.115l4.318 3.385a.498.498 0 0 0 .632 0l4.197-3.304a.497.497 0 0 0 .268-.43zm-4.018 5.171a.497.497 0 0 1-.404.27H5.019a.498.498 0 0 1-.404-.27l-2.02-1.58a.5.5 0 0 1 .632-.78l1.838 1.44 1.838-1.44a.5.5 0 1 1 .632.78l-2.02 1.58zm4.017-7.518a1.485 1.485 0 0 0-1.06-.44H5.02a1.485 1.485 0 0 0-1.06.44l-4.318 3.385a.5.5 0 0 0 .632.78l4.197-3.304a.497.497 0 0 1 .632 0l4.197 3.304a.5.5 0 0 0 .632-.78l-4.318-3.385z"/>
+									</svg>
+								</span>
+								<span class="nav-link-text">IoT</span>
+							</a>
+						</li>
+						{% endif %}
 						{% if is_admin or user_role == 'editor' or (user_role == 'viewer' and 'consumables' in allowed_pages) %}
 						<li class="nav-item">
 							<a class="nav-link {{ 'active' if active_nav|default('') == 'consumables' else '' }}" href="{{ url_for('consumables') }}">
@@ -672,7 +684,11 @@
 														{% set mock_qty_diff = [3, 3, 20, 3, 15][mock_idx] %}
 														{% set mock_rej_pct = [0.3, 0.4, 1.1, 0.6, 1.1][mock_idx] %}
 														<tr data-rejection-percent="{{ '%.2f'|format(mock_rej_pct) }}" data-original-index="{{ loop.index0 }}">
-															<td class="cell"><span class="truncate">{{ row.partNo or row.item_code or '-' }}</span></td>
+															<td class="cell">
+																<a href="#" class="part-machines-link text-decoration-none" data-part-no="{{ (row.partNo or row.item_code or '-')|upper }}">
+																	<span class="truncate">{{ row.partNo or row.item_code or '-' }}</span>
+																</a>
+															</td>
 															<td class="cell text-center">{{ row.components_in_fixture if row.components_in_fixture is not none else '-' }}</td>
 															<td class="cell text-center">{{ (row.cycle_time_sec ~ 's') if row.cycle_time_sec is not none else '-' }}</td>
 															<td class="cell text-center">{{ plan_val }}</td>
@@ -1040,6 +1056,7 @@
 
 				<!-- Server-saved highlights preference (from Settings); used by Production Highlights button -->
 				<script>window.__highlightsFilter = "{{ highlights_filter|default('bad') }}";</script>
+				<script id="iot-part-machine-map" type="application/json">{{ iot_part_machine_map|default({})|tojson }}</script>
 				<!-- History Excel: client-side CSV from visible table rows (Highlights + no full-page navigation). -->
 				<script>
 				(function () {
@@ -1441,6 +1458,70 @@
 						})();
 					});
 				</script>
+
+				<script>
+					document.addEventListener('DOMContentLoaded', function () {
+						var mapNode = document.getElementById('iot-part-machine-map');
+						var partMachineMap = {};
+						try { partMachineMap = JSON.parse(mapNode ? mapNode.textContent : '{}') || {}; } catch (e) { partMachineMap = {}; }
+						var modalEl = document.getElementById('partMachinesModal');
+						var modal = modalEl ? new bootstrap.Modal(modalEl) : null;
+						var partNoEl = document.getElementById('part-machines-partno');
+						var tbodyEl = document.getElementById('part-machines-tbody');
+
+						function renderPartMachines(partNo) {
+							if (!tbodyEl || !partNoEl) return;
+							var key = (partNo || '').trim().toUpperCase();
+							partNoEl.textContent = key || '-';
+							var rows = partMachineMap[key] || [];
+							if (!rows.length) {
+								tbodyEl.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No machine-level data found for this part.</td></tr>';
+								return;
+							}
+							rows.sort(function (a, b) { return String(a.machine || '').localeCompare(String(b.machine || '')); });
+							tbodyEl.innerHTML = rows.map(function (r) {
+								return '<tr>' +
+									'<td>' + (r.machine || '-') + '</td>' +
+									'<td class="text-end">' + (Number(r.shot || 0)) + '</td>' +
+									'<td class="text-end">' + (Number(r.quantity || 0)) + '</td>' +
+									'</tr>';
+							}).join('');
+						}
+
+						document.querySelectorAll('.part-machines-link').forEach(function (a) {
+							a.addEventListener('click', function (e) {
+								e.preventDefault();
+								renderPartMachines(a.getAttribute('data-part-no'));
+								if (modal) modal.show();
+							});
+						});
+					});
+				</script>
+
+				<div class="modal fade" id="partMachinesModal" tabindex="-1" aria-labelledby="partMachinesModalLabel" aria-hidden="true">
+					<div class="modal-dialog modal-lg modal-dialog-scrollable">
+						<div class="modal-content">
+							<div class="modal-header">
+								<h5 class="modal-title" id="partMachinesModalLabel">Machines for <span id="part-machines-partno">-</span></h5>
+								<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+							</div>
+							<div class="modal-body">
+								<div class="table-responsive">
+									<table class="table table-bordered table-sm mb-0">
+										<thead>
+											<tr>
+												<th>Machine</th>
+												<th class="text-end">Shot</th>
+												<th class="text-end">Quantity</th>
+											</tr>
+										</thead>
+										<tbody id="part-machines-tbody"></tbody>
+									</table>
+								</div>
+							</div>
+						</div>
+					</div>
+				</div>
 
 </body>
 

@@ -265,27 +265,24 @@ IOT_MASTER_TABLE = "alubee_production_marts.fact_iot_master"
 
 
 def fetch_iot_master_rows(date_str=None, shift=None, unit=None, department=None):
-    """Fetch production/IoT rows from fact_iot_master. Same filters as machine idle (date, shift, unit, department)."""
+    """Fetch production/IoT rows from fact_iot_master with machine excluded."""
     if get_bq_client() is None:
         return []
-    cache_key = ("iot_master", date_str, shift, unit, department)
+    # Versioned cache key to invalidate older grouped payloads.
+    cache_key = ("iot_master_v4", date_str, shift, unit, department)
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
 
     query = """
         SELECT
-            shift_date,
-            shift_id,
-            unit,
-            department,
-            item_code,
+            ANY_VALUE(item_code) AS item_code,
             partNo,
-            cycle_time_sec,
-            components_in_fixture,
-            shot,
-            quantity,
-            plan
+            ROUND(AVG(COALESCE(CAST(cycle_time_sec AS FLOAT64), 0)), 2) AS cycle_time_sec,
+            ROUND(AVG(COALESCE(CAST(components_in_fixture AS FLOAT64), 0)), 2) AS components_in_fixture,
+            SUM(COALESCE(CAST(plan AS INT64), 0)) AS plan,
+            SUM(COALESCE(CAST(shot AS INT64), 0)) AS shot,
+            SUM(COALESCE(CAST(quantity AS INT64), 0)) AS quantity
         FROM `""" + IOT_MASTER_TABLE + """`
         WHERE 1 = 1
     """
@@ -307,19 +304,131 @@ def fetch_iot_master_rows(date_str=None, shift=None, unit=None, department=None)
         query += " AND department = @department"
         params.append(bigquery.ScalarQueryParameter("department", "STRING", department))
 
-    query += " ORDER BY partNo, shift_id"
+    query += """
+        GROUP BY partNo
+        ORDER BY partNo
+    """
 
     job_config = bigquery.QueryJobConfig(query_parameters=params)
 
     try:
         result = get_bq_client().query(query, job_config=job_config).result()
         rows = [dict(row) for row in result]
+
+        # Final safety merge for UI: ensure one row per part number.
+        # This prevents visible duplicates when partNo varies by spacing/case
+        # or when older cached/query paths split the same part.
+        merged = {}
+        for row in rows:
+            part_no = str(row.get("partNo") or row.get("item_code") or "-").strip().upper()
+            key = re.sub(r"\s+", " ", part_no)
+            if key not in merged:
+                merged[key] = {
+                    "partNo": part_no or "-",
+                    "item_code": row.get("item_code"),
+                    "cycle_time_sec_sum": 0.0,
+                    "components_in_fixture_sum": 0.0,
+                    "avg_count": 0,
+                    "plan": 0,
+                    "shot": 0,
+                    "quantity": 0,
+                }
+            m = merged[key]
+            try:
+                m["cycle_time_sec_sum"] += float(row.get("cycle_time_sec") or 0)
+                m["components_in_fixture_sum"] += float(row.get("components_in_fixture") or 0)
+                m["avg_count"] += 1
+            except (TypeError, ValueError):
+                pass
+            for metric in ("plan", "shot", "quantity"):
+                try:
+                    m[metric] += int(row.get(metric) or 0)
+                except (TypeError, ValueError):
+                    pass
+
+        rows = []
+        for _, m in merged.items():
+            n = m["avg_count"] or 1
+            rows.append(
+                {
+                    "partNo": m["partNo"],
+                    "item_code": m["item_code"],
+                    "cycle_time_sec": round(m["cycle_time_sec_sum"] / n, 2),
+                    "components_in_fixture": round(m["components_in_fixture_sum"] / n, 2),
+                    "plan": m["plan"],
+                    "shot": m["shot"],
+                    "quantity": m["quantity"],
+                }
+            )
+        rows.sort(key=lambda r: str(r.get("partNo") or ""))
         app.logger.info("IoT master: date=%s unit=%s shift=%s dept=%s -> %d rows", date_str, unit, shift, department, len(rows))
         _cache_set(cache_key, rows)
         return rows
     except Exception as e:
         app.logger.warning("BigQuery IoT master query failed: %s", e)
         return []
+
+
+def fetch_iot_part_machine_rows(date_str=None, shift=None, unit=None, department=None):
+    """Fetch machine-wise IoT shot/qty for each part number."""
+    if get_bq_client() is None:
+        return {}
+    cache_key = ("iot_part_machine_v1", date_str, shift, unit, department)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    query = """
+        SELECT
+            COALESCE(
+                NULLIF(UPPER(TRIM(CAST(partNo AS STRING))), ''),
+                NULLIF(UPPER(TRIM(CAST(item_code AS STRING))), ''),
+                '-'
+            ) AS partNo,
+            COALESCE(NULLIF(TRIM(CAST(machine AS STRING)), ''), '-') AS machine,
+            SUM(COALESCE(CAST(shot AS INT64), 0)) AS shot,
+            SUM(COALESCE(CAST(quantity AS INT64), 0)) AS quantity
+        FROM `""" + IOT_MASTER_TABLE + """`
+        WHERE 1 = 1
+    """
+    params = []
+    if date_str:
+        query += " AND shift_date = @date"
+        params.append(bigquery.ScalarQueryParameter("date", "DATE", date_str))
+    if shift and shift != "All":
+        query += " AND shift_id = @shift"
+        params.append(bigquery.ScalarQueryParameter("shift", "STRING", shift))
+    if unit and unit != "All":
+        query += " AND unit = @unit"
+        params.append(bigquery.ScalarQueryParameter("unit", "STRING", unit))
+    if department and department != "All":
+        query += " AND department = @department"
+        params.append(bigquery.ScalarQueryParameter("department", "STRING", department))
+
+    query += """
+        GROUP BY partNo, machine
+        ORDER BY partNo, machine
+    """
+
+    try:
+        result = get_bq_client().query(
+            query, job_config=bigquery.QueryJobConfig(query_parameters=params)
+        ).result()
+        part_map = {}
+        for row in result:
+            part_no = (row.get("partNo") or "-").strip().upper()
+            part_map.setdefault(part_no, []).append(
+                {
+                    "machine": row.get("machine") or "-",
+                    "shot": int(row.get("shot") or 0),
+                    "quantity": int(row.get("quantity") or 0),
+                }
+            )
+        _cache_set(cache_key, part_map)
+        return part_map
+    except Exception as e:
+        app.logger.warning("BigQuery IoT part-machine query failed: %s", e)
+        return {}
 
 
 def fetch_realtime_latest_rows(
@@ -512,6 +621,17 @@ def _user_has_ppc_access():
     return "ppc" in pages
 
 
+def _user_has_iot_access():
+    """IoT: admin/editor, or viewer with 'iot' or legacy 'ppc' (same shop floor users)."""
+    if not current_user.is_authenticated:
+        return False
+    role = getattr(current_user, "role", "") or ""
+    if role == "admin" or role == "editor":
+        return True
+    pages = getattr(current_user, "allowed_pages", None) or []
+    return "iot" in pages or "ppc" in pages
+
+
 def require_page(page_key):
     """Abort 403 if current user is not allowed to access this page."""
     if current_user.role == "admin":
@@ -588,6 +708,12 @@ def index():
         machine_rows,
         iot_rows,
     ) = _fetch_history_dashboard_rows()
+    iot_part_machine_map = fetch_iot_part_machine_rows(
+        date_str=selected_date,
+        shift=selected_shift,
+        unit=selected_unit,
+        department=selected_department,
+    )
 
     # Realtime slicers must not affect History; keep them in separate query params.
     selected_realtime_unit = request.args.get("realtimeUnitSlicer") or selected_unit
@@ -618,6 +744,7 @@ def index():
         "index.html",
         machine_rows=machine_rows,
         iot_rows=iot_rows,
+        iot_part_machine_map=iot_part_machine_map,
         realtime_rows=realtime_rows,
         selected_date=selected_date,
         selected_shift=selected_shift,
@@ -686,6 +813,502 @@ REALTIME_LATEST_TABLE = "alubee-prod.alubee_production_marts.fact_realtime_lates
 # Production dashboard Realtime tab reads current-shift rows from staging master catalog (not fact_realtime_latest).
 REALTIME_MASTER_CATALOG_SOURCE = "alubee-prod.alubee_production_staging.vw_master_catalog"
 DIM_MACHINE_MAPPER_TABLE = "alubee-prod.alubee_production_marts.dim_machine_mapper"
+FACTS_REALTIME_LOGS_TABLE = "alubee-prod.alubee_production_marts.facts_realtime_logs"
+# IoT Realtime: (BigQuery field, single-token UI header). Row dicts use BQ keys; template shows labels.
+IOT_REALTIME_LOG_COLUMNS_UI = (
+    ("publish_time_ist", "Timestamp"),
+    ("device_id", "Device"),
+    ("iot_status", "Status"),
+    ("wifi_mac", "MAC"),
+    ("wifi_ip", "IP"),
+    ("wifi_status", "Netstate"),
+    ("wifi_rssi_dbm", "RSSI"),
+    ("wifi_disconnect_count", "Disconnects"),
+    ("wifi_reconnect_count", "Reconnects"),
+    ("uptime_ms", "Uptime"),
+    ("boot_count", "Boots"),
+    ("reset_reason", "Reset"),
+    ("scheduled_reset_morning_ok", "AMreset"),
+    ("scheduled_restart_morning_ok", "AMreboot"),
+    ("scheduled_reset_evening_ok", "PMreset"),
+    ("scheduled_restart_evening_ok", "PMreboot"),
+    ("free_heap_bytes", "Heapfree"),
+    ("min_free_heap_bytes", "Heapmin"),
+    ("loop_time_ms_avg", "Loopavg"),
+    ("loop_time_ms_max", "Loopmax"),
+    ("error_code", "Errcode"),
+    ("error_source", "Errsource"),
+    ("error_msg", "Errmsg"),
+    ("last_error_epoch", "Errepoch"),
+    ("error_count_today", "Errcount"),
+    ("chip_temp_c", "Chiptemp"),
+    ("i2c_lcd_0x27_present", "Lcd27"),
+    ("i2c_lcd_probe_fail_count", "Lcdfails"),
+    ("i2c_garbage_suspected", "I2cwarn"),
+)
+IOT_REALTIME_LOG_BQ_KEYS = tuple(k for k, _ in IOT_REALTIME_LOG_COLUMNS_UI)
+# Template-only key: per-column severity for IoT realtime row highlighting ("error" | "warn" | "").
+IOT_REALTIME_LEVELS_KEY = "__iot_cell_levels__"
+# No red/yellow on these cells (identity / network / raw error text); they still count for Device row level.
+IOT_REALTIME_NO_CELL_HIGHLIGHT_BQ_KEYS = frozenset(
+    {
+        "publish_time_ist",
+        "wifi_mac",
+        "wifi_ip",
+        "error_code",
+        "error_source",
+        "error_msg",
+        "last_error_epoch",
+        "iot_status",
+    }
+)
+
+# IoT AM/PM scheduled reset-reboot: highlight not-OK as error only after these IST cutoffs
+# (before 08:00 IST, morning fields are "not yet due"; before 21:00 IST, evening fields same).
+IOT_SCHED_IST_ZONE_NAME = "Asia/Kolkata"
+IOT_SCHED_AM_NOT_OK_CRITICAL_FROM_HOUR = 8
+IOT_SCHED_AM_NOT_OK_CRITICAL_FROM_MINUTE = 0
+IOT_SCHED_PM_NOT_OK_CRITICAL_FROM_HOUR = 21
+IOT_SCHED_PM_NOT_OK_CRITICAL_FROM_MINUTE = 0
+
+
+def _iot_now_ist() -> datetime:
+    """Wall clock in Asia/Kolkata for AM/PM schedule highlight gates."""
+    if ZoneInfo is not None:
+        return datetime.now(ZoneInfo(IOT_SCHED_IST_ZONE_NAME))
+    from datetime import timezone, timedelta
+
+    return datetime.now(timezone(timedelta(hours=5, minutes=30)))
+
+
+def _iot_sched_past_ist_hm(now_ist: datetime, hour: int, minute: int) -> bool:
+    return now_ist.hour * 60 + now_ist.minute >= hour * 60 + minute
+
+
+def _iot_realtime_num(val):
+    """Coerce BigQuery numeric-ish values to float, or None if not numeric."""
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and val != val:  # NaN
+            return None
+        return float(val)
+    try:
+        from decimal import Decimal
+
+        if isinstance(val, Decimal):
+            return float(val)
+    except ImportError:
+        pass
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _iot_sched_slot_not_ok(val) -> bool:
+    """Scheduled OK flag is failing: False / 0; missing or unknown → not treated as failure."""
+    if val is None:
+        return False
+    if val is True:
+        return False
+    if val is False:
+        return True
+    n = _iot_realtime_num(val)
+    if n is not None:
+        return n == 0
+    s = str(val).strip().lower()
+    if not s or s in ("-", "none", "null", "n/a", "na"):
+        return False
+    if s in ("0", "false", "no", "fail", "failed", "off"):
+        return True
+    return False
+
+
+def _iot_realtime_cell_level(key: str, val) -> str | None:
+    """Classify one raw cell: 'error' (abnormal), 'warn', or None (normal)."""
+    if key == "device_id":
+        return None
+
+    if key == "iot_status" and val is not None:
+        if str(val).strip().lower() == "stopped":
+            return "error"
+
+    if key == "wifi_status" and val is not None:
+        s = str(val).strip().lower()
+        if s and s != "-":
+            bad = ("disconnect", "offline", "no ap", "fail", "error", "lost", "disconn")
+            if any(b in s for b in bad):
+                return "warn"
+
+    if key in ("wifi_rssi_dbm",) and val is not None:
+        n = _iot_realtime_num(val)
+        if n is not None and n < -82:
+            return "warn"
+
+    if key in ("wifi_disconnect_count", "wifi_reconnect_count") and val is not None:
+        n = _iot_realtime_num(val)
+        if n is not None and n > 5:
+            return "warn"
+
+    if key == "boot_count" and val is not None:
+        n = _iot_realtime_num(val)
+        if n is not None and n > 30:
+            return "warn"
+
+    if key == "reset_reason" and val is not None:
+        s = str(val).strip().upper()
+        if not s or s == "-":
+            return None
+        ok_tokens = (
+            "POWERON",
+            "POWER_ON",
+            "ESP_RST_POWERON",
+            "DEEPSLEEP_RESET",
+            "SW_CPU_RESET",
+            "RTCWDT_RTC_RESET",
+            "ESP_RST_DEEPSLEEP",
+            "SW_RESET",
+            "ESP_RST_SW",
+        )
+        if s not in ok_tokens:
+            return "warn"
+
+    if key in (
+        "scheduled_reset_morning_ok",
+        "scheduled_restart_morning_ok",
+        "scheduled_reset_evening_ok",
+        "scheduled_restart_evening_ok",
+    ):
+        if not _iot_sched_slot_not_ok(val):
+            return None
+        now_ist = _iot_now_ist()
+        if key in ("scheduled_reset_morning_ok", "scheduled_restart_morning_ok"):
+            if _iot_sched_past_ist_hm(
+                now_ist,
+                IOT_SCHED_AM_NOT_OK_CRITICAL_FROM_HOUR,
+                IOT_SCHED_AM_NOT_OK_CRITICAL_FROM_MINUTE,
+            ):
+                return "error"
+            return None
+        if _iot_sched_past_ist_hm(
+            now_ist,
+            IOT_SCHED_PM_NOT_OK_CRITICAL_FROM_HOUR,
+            IOT_SCHED_PM_NOT_OK_CRITICAL_FROM_MINUTE,
+        ):
+            return "error"
+        return None
+
+    if key == "free_heap_bytes" and val is not None:
+        n = _iot_realtime_num(val)
+        if n is not None and n < 25_000:
+            return "warn"
+
+    if key == "min_free_heap_bytes" and val is not None:
+        n = _iot_realtime_num(val)
+        if n is not None and n < 8_192:
+            return "error"
+        if n is not None and n < 20_000:
+            return "warn"
+
+    if key == "loop_time_ms_max" and val is not None:
+        n = _iot_realtime_num(val)
+        if n is not None and n > 200:
+            return "warn"
+
+    if key == "loop_time_ms_avg" and val is not None:
+        n = _iot_realtime_num(val)
+        if n is not None and n > 100:
+            return "warn"
+
+    if key == "error_code" and val is not None:
+        n = _iot_realtime_num(val)
+        if n is not None and n != 0:
+            return "error"
+        st = str(val).strip().lower()
+        if st and st not in ("0", "-", "none", "null"):
+            return "error"
+
+    if key == "error_source" and val is not None:
+        st = str(val).strip()
+        if st and st not in ("-", "none", "null", "n/a", "na"):
+            return "warn"
+
+    if key == "error_msg" and val is not None:
+        st = str(val).strip()
+        if st and st.lower() not in ("-", "none", "null", "n/a", "na"):
+            return "error"
+
+    if key == "error_count_today" and val is not None:
+        n = _iot_realtime_num(val)
+        if n is not None and n >= 10:
+            return "error"
+        if n is not None and n >= 1:
+            return "warn"
+
+    if key == "chip_temp_c" and val is not None:
+        n = _iot_realtime_num(val)
+        if n is not None and n >= 90:
+            return "error"
+        if n is not None and n >= 75:
+            return "warn"
+
+    if key == "i2c_lcd_0x27_present":
+        if val is False:
+            return "warn"
+
+    if key == "i2c_lcd_probe_fail_count" and val is not None:
+        n = _iot_realtime_num(val)
+        if n is not None and n >= 5:
+            return "error"
+        if n is not None and n >= 1:
+            return "warn"
+
+    if key == "i2c_garbage_suspected":
+        if val is True:
+            return "error"
+
+    return None
+
+
+def _iot_realtime_levels_for_row(raw: dict) -> dict[str, str]:
+    """Map each BQ column key to '', 'warn', or 'error'. device_id reflects worst severity in the row."""
+    out: dict[str, str] = {}
+    worst: str | None = None
+    for k in IOT_REALTIME_LOG_BQ_KEYS:
+        if k == "device_id":
+            continue
+        lv = _iot_realtime_cell_level(k, raw.get(k))
+        if lv == "error":
+            worst = "error"
+        elif lv == "warn" and worst != "error":
+            worst = "warn"
+        if k in IOT_REALTIME_NO_CELL_HIGHLIGHT_BQ_KEYS:
+            out[k] = ""
+        else:
+            out[k] = lv or ""
+    out["device_id"] = worst or ""
+    return out
+
+
+def _iot_realtime_log_cell(val):
+    """Format IoT realtime table cells; missing / placeholder strings show as '-'."""
+    if val is None:
+        return "-"
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, float) and val != val:  # NaN
+        return "-"
+    if isinstance(val, str):
+        st = val.strip()
+        if not st or st.lower() in ("none", "null", "n/a", "na"):
+            return "-"
+    if isinstance(val, datetime):
+        return val.isoformat(sep=" ", timespec="seconds")
+    if isinstance(val, date):
+        return val.isoformat()
+    return val
+
+
+def fetch_iot_realtime_logs_distinct_filters():
+    """Distinct unit, machine_type (department), device_id for IoT realtime filters (recent data window)."""
+    if get_bq_client() is None:
+        return [], [], []
+    cache_key = "iot_realtime_log_filters_v2"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    units_sql = f"""
+        SELECT DISTINCT unit AS v
+        FROM `{FACTS_REALTIME_LOGS_TABLE}`
+        WHERE unit IS NOT NULL AND TRIM(CAST(unit AS STRING)) != ''
+          AND publish_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+        ORDER BY 1
+    """
+    mt_sql = f"""
+        SELECT DISTINCT machine_type AS v
+        FROM `{FACTS_REALTIME_LOGS_TABLE}`
+        WHERE machine_type IS NOT NULL AND TRIM(CAST(machine_type AS STRING)) != ''
+          AND publish_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+        ORDER BY 1
+    """
+    dev_sql = f"""
+        SELECT DISTINCT device_id AS v
+        FROM `{FACTS_REALTIME_LOGS_TABLE}`
+        WHERE device_id IS NOT NULL AND TRIM(CAST(device_id AS STRING)) != ''
+          AND publish_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+        ORDER BY 1
+    """
+    try:
+        units = [str(r["v"]) for r in get_bq_client().query(units_sql).result()]
+        mts = [str(r["v"]) for r in get_bq_client().query(mt_sql).result()]
+        devices = [str(r["v"]) for r in get_bq_client().query(dev_sql).result()]
+        out = (units, mts, devices)
+        _cache_set(cache_key, out, ttl_sec=120)
+        return out
+    except Exception as e:
+        app.logger.warning("BigQuery fetch_iot_realtime_logs_distinct_filters failed: %s", e)
+        return [], [], []
+
+
+def fetch_iot_realtime_logs_table(
+    iot_unit: str | None,
+    iot_machine_type: str | None,
+    iot_device: str | None = None,
+    limit: int = 500,
+):
+    """Latest row per device plus Status from latest vs previous publish_time."""
+    if get_bq_client() is None:
+        return []
+    iot_unit = (iot_unit or "All").strip()
+    iot_machine_type = (iot_machine_type or "All").strip()
+    iot_device = (iot_device or "All").strip()
+    limit = max(50, min(int(limit or 500), 2000))
+
+    inner_where = f"""
+        FROM `{FACTS_REALTIME_LOGS_TABLE}`
+        WHERE 1 = 1
+          AND publish_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+    """
+    params = []
+    if iot_unit and iot_unit != "All":
+        inner_where += " AND unit = @iot_unit"
+        params.append(bigquery.ScalarQueryParameter("iot_unit", "STRING", iot_unit))
+    if iot_machine_type and iot_machine_type != "All":
+        inner_where += " AND machine_type = @iot_machine_type"
+        params.append(bigquery.ScalarQueryParameter("iot_machine_type", "STRING", iot_machine_type))
+    if iot_device and iot_device != "All":
+        inner_where += " AND CAST(device_id AS STRING) = @iot_device"
+        params.append(bigquery.ScalarQueryParameter("iot_device", "STRING", iot_device))
+
+    base_cols = """
+            publish_time,
+            publish_time_ist,
+            device_id,
+            wifi_mac,
+            wifi_ip,
+            wifi_status,
+            wifi_rssi_dbm,
+            wifi_disconnect_count,
+            wifi_reconnect_count,
+            uptime_ms,
+            boot_count,
+            reset_reason,
+            scheduled_reset_morning_ok,
+            scheduled_restart_morning_ok,
+            scheduled_reset_evening_ok,
+            scheduled_restart_evening_ok,
+            free_heap_bytes,
+            min_free_heap_bytes,
+            loop_time_ms_avg,
+            loop_time_ms_max,
+            error_code,
+            error_source,
+            error_msg,
+            last_error_epoch,
+            error_count_today,
+            chip_temp_c,
+            i2c_lcd_0x27_present,
+            i2c_lcd_probe_fail_count,
+            i2c_garbage_suspected,
+            measurement
+    """
+    query = f"""
+        WITH iot_rt_base AS (
+            SELECT {base_cols}
+            {inner_where}
+        ),
+        ranked AS (
+            SELECT
+                *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY device_id ORDER BY publish_time DESC, measurement DESC
+                ) AS iot_rn
+            FROM iot_rt_base
+        )
+        SELECT
+            l.publish_time_ist,
+            l.device_id,
+            CASE
+                WHEN p.publish_time IS NOT NULL AND l.publish_time = p.publish_time THEN 'Stopped'
+                ELSE 'Running'
+            END AS iot_status,
+            l.wifi_mac,
+            l.wifi_ip,
+            l.wifi_status,
+            l.wifi_rssi_dbm,
+            l.wifi_disconnect_count,
+            l.wifi_reconnect_count,
+            l.uptime_ms,
+            l.boot_count,
+            l.reset_reason,
+            l.scheduled_reset_morning_ok,
+            l.scheduled_restart_morning_ok,
+            l.scheduled_reset_evening_ok,
+            l.scheduled_restart_evening_ok,
+            l.free_heap_bytes,
+            l.min_free_heap_bytes,
+            l.loop_time_ms_avg,
+            l.loop_time_ms_max,
+            l.error_code,
+            l.error_source,
+            l.error_msg,
+            l.last_error_epoch,
+            l.error_count_today,
+            l.chip_temp_c,
+            l.i2c_lcd_0x27_present,
+            l.i2c_lcd_probe_fail_count,
+            l.i2c_garbage_suspected
+        FROM ranked l
+        LEFT JOIN ranked p
+            ON l.device_id = p.device_id AND p.iot_rn = 2
+        WHERE l.iot_rn = 1
+        ORDER BY l.device_id ASC
+        LIMIT {int(limit)}
+    """
+    job_config = bigquery.QueryJobConfig(query_parameters=params) if params else None
+    try:
+        result = get_bq_client().query(query, job_config=job_config).result()
+        rows = []
+        for row in result:
+            raw = {k: row.get(k) for k in IOT_REALTIME_LOG_BQ_KEYS}
+            display = {k: _iot_realtime_log_cell(raw[k]) for k in IOT_REALTIME_LOG_BQ_KEYS}
+            display[IOT_REALTIME_LEVELS_KEY] = _iot_realtime_levels_for_row(raw)
+            rows.append(display)
+        return rows
+    except Exception as e:
+        app.logger.warning("BigQuery fetch_iot_realtime_logs_table failed: %s", e)
+        return []
+
+
+def _iot_realtime_summary_stats(rows: list) -> dict[str, int]:
+    """Counts for IoT realtime cards from the same rows shown in the table."""
+    total = len(rows)
+    running = stopped = 0
+    warning_rows = 0
+    error_rows = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        st = str(row.get("iot_status", "")).strip()
+        if st == "Running":
+            running += 1
+        elif st == "Stopped":
+            stopped += 1
+        levels = row.get(IOT_REALTIME_LEVELS_KEY) or {}
+        if not isinstance(levels, dict):
+            levels = {}
+        if any(v == "warn" for v in levels.values()):
+            warning_rows += 1
+        if any(v == "error" for v in levels.values()):
+            error_rows += 1
+    return {
+        "total": total,
+        "running": running,
+        "stopped": stopped,
+        "warnings": warning_rows,
+        "errors": error_rows,
+    }
 
 
 def fetch_monthly_planner(plan_month: str | None = None, department: str | None = None):
@@ -1329,6 +1952,51 @@ def ppc():
         job_allocations=job_allocations,
         switch_requests=switch_requests,
         monthly_planner_parts=monthly_planner_parts,
+    )
+
+
+@app.route("/iot")
+@login_required
+def iot():
+    if not _user_has_iot_access():
+        abort(403)
+    tab = (request.args.get("tab") or "realtime").strip().lower()
+    if tab not in ("realtime", "history"):
+        tab = "realtime"
+    iot_unit = (request.args.get("iot_unit") or "All").strip() or "All"
+    iot_machine_type = (request.args.get("iot_machine_type") or "All").strip() or "All"
+    iot_device = (request.args.get("iot_device") or "All").strip() or "All"
+    iot_unit_options, iot_machine_type_options, iot_device_options = [], [], []
+    iot_realtime_rows = []
+    if tab == "realtime":
+        iot_unit_options, iot_machine_type_options, iot_device_options = fetch_iot_realtime_logs_distinct_filters()
+        if iot_unit != "All" and iot_unit_options and iot_unit not in iot_unit_options:
+            iot_unit = "All"
+        if iot_machine_type != "All" and iot_machine_type_options and iot_machine_type not in iot_machine_type_options:
+            iot_machine_type = "All"
+        if iot_device != "All" and iot_device_options and iot_device not in iot_device_options:
+            iot_device = "All"
+        iot_realtime_rows = fetch_iot_realtime_logs_table(iot_unit, iot_machine_type, iot_device)
+        iot_summary_stats = _iot_realtime_summary_stats(iot_realtime_rows)
+    else:
+        iot_summary_stats = _iot_realtime_summary_stats([])
+    refresh_ist = _iot_now_ist()
+    iot_last_refresh_display = refresh_ist.strftime("%d %b %Y, %H:%M:%S IST")
+    return render_template(
+        "iot.html",
+        active_nav="iot",
+        iot_tab=tab,
+        bq_iot_available=get_bq_client() is not None,
+        iot_last_refresh_display=iot_last_refresh_display,
+        iot_unit=iot_unit,
+        iot_machine_type=iot_machine_type,
+        iot_device=iot_device,
+        iot_unit_options=iot_unit_options,
+        iot_machine_type_options=iot_machine_type_options,
+        iot_device_options=iot_device_options,
+        iot_realtime_rows=iot_realtime_rows,
+        iot_realtime_log_columns=IOT_REALTIME_LOG_COLUMNS_UI,
+        iot_summary_stats=iot_summary_stats,
     )
 
 

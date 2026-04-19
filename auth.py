@@ -14,6 +14,7 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "instance", "app.db")
 PAGE_KEYS = [
     ("production", "Production"),
     ("ppc", "PPC"),
+    ("iot", "IoT"),
     ("realtime", "Realtime"),
     ("consumables", "Consumables"),
     ("maintenance", "Maintenance"),
