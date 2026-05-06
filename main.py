@@ -264,27 +264,44 @@ def fetch_machine_idle_rows(date_str=None, shift=None, unit=None, department=Non
 IOT_MASTER_TABLE = "alubee_production_marts.fact_iot_master"
 
 
+def _iot_part_machine_map_key(part_no, shift_id, department, unit=None):
+    """Stable map key for part + shift + department + unit (matches template/modal/export)."""
+    p = re.sub(r"\s+", " ", str(part_no or "-").strip().upper())
+    s = str(shift_id if shift_id is not None else "").strip()
+    d = str(department if department is not None else "").strip()
+    u = str(unit if unit is not None else "").strip()
+    return f"{p}\x1f{s}\x1f{d}\x1f{u}"
+
+
 def fetch_iot_master_rows(date_str=None, shift=None, unit=None, department=None):
     """Fetch production/IoT rows from fact_iot_master with machine excluded."""
     if get_bq_client() is None:
         return []
     # Versioned cache key to invalidate older grouped payloads.
-    cache_key = ("iot_master_v4", date_str, shift, unit, department)
+    cache_key = ("iot_master_v6", date_str, shift, unit, department)
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
 
     query = """
-        SELECT
-            ANY_VALUE(item_code) AS item_code,
-            partNo,
-            ROUND(AVG(COALESCE(CAST(cycle_time_sec AS FLOAT64), 0)), 2) AS cycle_time_sec,
-            ROUND(AVG(COALESCE(CAST(components_in_fixture AS FLOAT64), 0)), 2) AS components_in_fixture,
-            SUM(COALESCE(CAST(plan AS INT64), 0)) AS plan,
-            SUM(COALESCE(CAST(shot AS INT64), 0)) AS shot,
-            SUM(COALESCE(CAST(quantity AS INT64), 0)) AS quantity
-        FROM `""" + IOT_MASTER_TABLE + """`
-        WHERE 1 = 1
+        WITH base AS (
+            SELECT
+                item_code,
+                cycle_time_sec,
+                components_in_fixture,
+                plan,
+                shot,
+                quantity,
+                COALESCE(
+                    NULLIF(UPPER(TRIM(CAST(partNo AS STRING))), ''),
+                    NULLIF(UPPER(TRIM(CAST(item_code AS STRING))), ''),
+                    '-'
+                ) AS part_no_norm,
+                COALESCE(NULLIF(TRIM(CAST(unit AS STRING)), ''), '-') AS unit_norm,
+                COALESCE(NULLIF(TRIM(CAST(shift_id AS STRING)), ''), '-') AS shift_norm,
+                COALESCE(NULLIF(TRIM(CAST(department AS STRING)), ''), '-') AS dept_norm
+            FROM `""" + IOT_MASTER_TABLE + """`
+            WHERE 1 = 1
     """
     params = []
 
@@ -305,8 +322,21 @@ def fetch_iot_master_rows(date_str=None, shift=None, unit=None, department=None)
         params.append(bigquery.ScalarQueryParameter("department", "STRING", department))
 
     query += """
-        GROUP BY partNo
-        ORDER BY partNo
+        )
+        SELECT
+            ANY_VALUE(item_code) AS item_code,
+            part_no_norm AS partNo,
+            unit_norm AS unit,
+            shift_norm AS shift_id,
+            dept_norm AS department,
+            ROUND(AVG(COALESCE(CAST(cycle_time_sec AS FLOAT64), 0)), 2) AS cycle_time_sec,
+            ROUND(AVG(COALESCE(CAST(components_in_fixture AS FLOAT64), 0)), 2) AS components_in_fixture,
+            SUM(COALESCE(CAST(plan AS INT64), 0)) AS plan,
+            SUM(COALESCE(CAST(shot AS INT64), 0)) AS shot,
+            SUM(COALESCE(CAST(quantity AS INT64), 0)) AS quantity
+        FROM base
+        GROUP BY part_no_norm, unit_norm, shift_norm, dept_norm
+        ORDER BY part_no_norm, unit_norm, shift_norm, dept_norm
     """
 
     job_config = bigquery.QueryJobConfig(query_parameters=params)
@@ -314,53 +344,13 @@ def fetch_iot_master_rows(date_str=None, shift=None, unit=None, department=None)
     try:
         result = get_bq_client().query(query, job_config=job_config).result()
         rows = [dict(row) for row in result]
-
-        # Final safety merge for UI: ensure one row per part number.
-        # This prevents visible duplicates when partNo varies by spacing/case
-        # or when older cached/query paths split the same part.
-        merged = {}
         for row in rows:
-            part_no = str(row.get("partNo") or row.get("item_code") or "-").strip().upper()
-            key = re.sub(r"\s+", " ", part_no)
-            if key not in merged:
-                merged[key] = {
-                    "partNo": part_no or "-",
-                    "item_code": row.get("item_code"),
-                    "cycle_time_sec_sum": 0.0,
-                    "components_in_fixture_sum": 0.0,
-                    "avg_count": 0,
-                    "plan": 0,
-                    "shot": 0,
-                    "quantity": 0,
-                }
-            m = merged[key]
-            try:
-                m["cycle_time_sec_sum"] += float(row.get("cycle_time_sec") or 0)
-                m["components_in_fixture_sum"] += float(row.get("components_in_fixture") or 0)
-                m["avg_count"] += 1
-            except (TypeError, ValueError):
-                pass
-            for metric in ("plan", "shot", "quantity"):
-                try:
-                    m[metric] += int(row.get(metric) or 0)
-                except (TypeError, ValueError):
-                    pass
-
-        rows = []
-        for _, m in merged.items():
-            n = m["avg_count"] or 1
-            rows.append(
-                {
-                    "partNo": m["partNo"],
-                    "item_code": m["item_code"],
-                    "cycle_time_sec": round(m["cycle_time_sec_sum"] / n, 2),
-                    "components_in_fixture": round(m["components_in_fixture_sum"] / n, 2),
-                    "plan": m["plan"],
-                    "shot": m["shot"],
-                    "quantity": m["quantity"],
-                }
+            row["iot_context_key"] = _iot_part_machine_map_key(
+                row.get("partNo"),
+                row.get("shift_id"),
+                row.get("department"),
+                row.get("unit"),
             )
-        rows.sort(key=lambda r: str(r.get("partNo") or ""))
         app.logger.info("IoT master: date=%s unit=%s shift=%s dept=%s -> %d rows", date_str, unit, shift, department, len(rows))
         _cache_set(cache_key, rows)
         return rows
@@ -373,23 +363,27 @@ def fetch_iot_part_machine_rows(date_str=None, shift=None, unit=None, department
     """Fetch machine-wise IoT shot/qty for each part number."""
     if get_bq_client() is None:
         return {}
-    cache_key = ("iot_part_machine_v1", date_str, shift, unit, department)
+    cache_key = ("iot_part_machine_v3", date_str, shift, unit, department)
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
 
     query = """
-        SELECT
-            COALESCE(
-                NULLIF(UPPER(TRIM(CAST(partNo AS STRING))), ''),
-                NULLIF(UPPER(TRIM(CAST(item_code AS STRING))), ''),
-                '-'
-            ) AS partNo,
-            COALESCE(NULLIF(TRIM(CAST(machine AS STRING)), ''), '-') AS machine,
-            SUM(COALESCE(CAST(shot AS INT64), 0)) AS shot,
-            SUM(COALESCE(CAST(quantity AS INT64), 0)) AS quantity
-        FROM `""" + IOT_MASTER_TABLE + """`
-        WHERE 1 = 1
+        WITH base AS (
+            SELECT
+                COALESCE(
+                    NULLIF(UPPER(TRIM(CAST(partNo AS STRING))), ''),
+                    NULLIF(UPPER(TRIM(CAST(item_code AS STRING))), ''),
+                    '-'
+                ) AS part_no_norm,
+                COALESCE(NULLIF(TRIM(CAST(unit AS STRING)), ''), '-') AS unit_norm,
+                COALESCE(NULLIF(TRIM(CAST(shift_id AS STRING)), ''), '-') AS shift_norm,
+                COALESCE(NULLIF(TRIM(CAST(department AS STRING)), ''), '-') AS dept_norm,
+                COALESCE(NULLIF(TRIM(CAST(machine AS STRING)), ''), '-') AS machine,
+                CAST(shot AS INT64) AS shot,
+                CAST(quantity AS INT64) AS quantity
+            FROM `""" + IOT_MASTER_TABLE + """`
+            WHERE 1 = 1
     """
     params = []
     if date_str:
@@ -406,8 +400,18 @@ def fetch_iot_part_machine_rows(date_str=None, shift=None, unit=None, department
         params.append(bigquery.ScalarQueryParameter("department", "STRING", department))
 
     query += """
-        GROUP BY partNo, machine
-        ORDER BY partNo, machine
+        )
+        SELECT
+            part_no_norm AS partNo,
+            unit_norm AS unit,
+            shift_norm AS shift_id,
+            dept_norm AS department,
+            machine,
+            SUM(COALESCE(shot, 0)) AS shot,
+            SUM(COALESCE(quantity, 0)) AS quantity
+        FROM base
+        GROUP BY part_no_norm, unit_norm, shift_norm, dept_norm, machine
+        ORDER BY part_no_norm, unit_norm, shift_norm, dept_norm, machine
     """
 
     try:
@@ -416,8 +420,13 @@ def fetch_iot_part_machine_rows(date_str=None, shift=None, unit=None, department
         ).result()
         part_map = {}
         for row in result:
-            part_no = (row.get("partNo") or "-").strip().upper()
-            part_map.setdefault(part_no, []).append(
+            key = _iot_part_machine_map_key(
+                row.get("partNo"),
+                row.get("shift_id"),
+                row.get("department"),
+                row.get("unit"),
+            )
+            part_map.setdefault(key, []).append(
                 {
                     "machine": row.get("machine") or "-",
                     "shot": int(row.get("shot") or 0),

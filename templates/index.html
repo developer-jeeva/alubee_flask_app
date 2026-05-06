@@ -680,12 +680,31 @@
 														{% for row in iot_rows %}
 														{% set plan_val = row.plan or 0 %}
 														{% set qty_val = row.quantity or 0 %}
+														{% set ctx_key = row.iot_context_key %}
+														{% set ns_m = namespace(machines=[]) %}
+														{% for e in (iot_part_machine_map.get(ctx_key, []) if iot_part_machine_map else []) %}
+															{% set m = e.machine %}
+															{% if m and m|string|trim and m not in ns_m.machines %}
+																{% set _ = ns_m.machines.append(m) %}
+															{% endif %}
+														{% endfor %}
+														{% set machine_export = (ns_m.machines|sort|join(', ')) or '-' %}
 														{% set mock_idx = loop.index0 % 5 %}
 														{% set mock_qty_diff = [3, 3, 20, 3, 15][mock_idx] %}
 														{% set mock_rej_pct = [0.3, 0.4, 1.1, 0.6, 1.1][mock_idx] %}
-														<tr data-rejection-percent="{{ '%.2f'|format(mock_rej_pct) }}" data-original-index="{{ loop.index0 }}">
+														<tr data-rejection-percent="{{ '%.2f'|format(mock_rej_pct) }}" data-original-index="{{ loop.index0 }}"
+															data-export-date="{{ selected_date|e }}"
+															data-export-shift="{{ row.shift_id|e }}"
+															data-export-unit="{{ row.unit|e }}"
+															data-export-department="{{ row.department|e }}"
+															data-export-part="{{ (row.partNo or row.item_code or '-')|e }}"
+															data-export-machine="{{ machine_export|e }}"
+															data-export-plan="{{ plan_val }}"
+															data-export-shot="{{ row.shot if row.shot is not none else '' }}"
+															data-export-quantity="{{ qty_val }}"
+															data-export-cycle-time-sec="{{ row.cycle_time_sec if row.cycle_time_sec is not none else '' }}">
 															<td class="cell">
-																<a href="#" class="part-machines-link text-decoration-none" data-part-no="{{ (row.partNo or row.item_code or '-')|upper }}">
+																<a href="#" class="part-machines-link text-decoration-none" data-part-no="{{ (row.partNo or row.item_code or '-')|upper }}" data-iot-context="{{ ctx_key|e }}">
 																	<span class="truncate">{{ row.partNo or row.item_code or '-' }}</span>
 																</a>
 															</td>
@@ -1089,15 +1108,60 @@
 					function exportVisibleTableCsv(tableId, filePrefix) {
 						var table = document.getElementById(tableId);
 						if (!table) return;
+						var bodyTrs = [].slice.call(table.querySelectorAll('tbody tr'));
+						var df = document.getElementById('dateFilter');
+						var d = (df && df.value) ? df.value : 'export';
+						var out;
+						var nCol;
+
+						if (tableId === 'production-dashboard-table') {
+							nCol = 10;
+							out = [['Date', 'Shift', 'Unit', 'Department', 'Part Number', 'Machine', 'Plan', 'Shot', 'Quantity', 'Cycle Time']];
+							var anyProd = false;
+							bodyTrs.forEach(function (tr) {
+								if (!rowVisible(tr)) return;
+								if (isSparseNoDataRow(tr)) {
+									var msg = tr.innerText.replace(/\s+/g, ' ').trim();
+									if (msg) {
+										var sparseRow = [msg];
+										for (var i = 1; i < nCol; i++) sparseRow.push('');
+										out.push(sparseRow);
+										anyProd = true;
+									}
+									return;
+								}
+								var cyc = tr.getAttribute('data-export-cycle-time-sec');
+								out.push([
+									tr.getAttribute('data-export-date') || '',
+									tr.getAttribute('data-export-shift') || '',
+									tr.getAttribute('data-export-unit') || '',
+									tr.getAttribute('data-export-department') || '',
+									tr.getAttribute('data-export-part') || '',
+									tr.getAttribute('data-export-machine') || '',
+									tr.getAttribute('data-export-plan') || '',
+									tr.getAttribute('data-export-shot') || '',
+									tr.getAttribute('data-export-quantity') || '',
+									cyc != null && cyc !== '' ? cyc : ''
+								]);
+								anyProd = true;
+							});
+							if (!anyProd) {
+								var padP = ['(No visible rows to export)'];
+								for (var jp = 1; jp < nCol; jp++) padP.push('');
+								out.push(padP);
+							}
+							downloadCsv(filePrefix + '_' + d + '.csv', out);
+							return;
+						}
+
 						var theadRows = table.querySelectorAll('thead tr');
 						if (!theadRows.length) return;
 						var headerTr = theadRows[theadRows.length - 1];
 						var headers = [].map.call(headerTr.querySelectorAll('th'), function (th) {
 							return th.innerText.replace(/\s+/g, ' ').trim();
 						});
-						var nCol = headers.length;
-						var out = [headers];
-						var bodyTrs = [].slice.call(table.querySelectorAll('tbody tr'));
+						nCol = headers.length;
+						out = [headers];
 						var any = false;
 						bodyTrs.forEach(function (tr) {
 							if (!rowVisible(tr)) return;
@@ -1123,8 +1187,6 @@
 							for (var j = 1; j < nCol; j++) pad.push('');
 							out.push(pad);
 						}
-						var df = document.getElementById('dateFilter');
-						var d = (df && df.value) ? df.value : 'export';
 						downloadCsv(filePrefix + '_' + d + '.csv', out);
 					}
 					document.addEventListener('DOMContentLoaded', function () {
@@ -1469,10 +1531,14 @@
 						var partNoEl = document.getElementById('part-machines-partno');
 						var tbodyEl = document.getElementById('part-machines-tbody');
 
-						function renderPartMachines(partNo) {
+						function renderPartMachines(partNo, contextKey) {
 							if (!tbodyEl || !partNoEl) return;
-							var key = (partNo || '').trim().toUpperCase();
-							partNoEl.textContent = key || '-';
+							var displayPart = (partNo || '').trim().toUpperCase();
+							partNoEl.textContent = displayPart || '-';
+							var key = (contextKey || '').trim();
+							if (!key) {
+								key = displayPart;
+							}
 							var rows = partMachineMap[key] || [];
 							if (!rows.length) {
 								tbodyEl.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No machine-level data found for this part.</td></tr>';
@@ -1491,7 +1557,10 @@
 						document.querySelectorAll('.part-machines-link').forEach(function (a) {
 							a.addEventListener('click', function (e) {
 								e.preventDefault();
-								renderPartMachines(a.getAttribute('data-part-no'));
+								renderPartMachines(
+									a.getAttribute('data-part-no'),
+									a.getAttribute('data-iot-context')
+								);
 								if (modal) modal.show();
 							});
 						});
