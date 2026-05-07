@@ -321,7 +321,7 @@
 							</a>
 						</li>
 						{% endif %}
-						{% if is_admin or user_role == 'editor' or (user_role == 'viewer' and ('iot' in allowed_pages or 'ppc' in allowed_pages)) %}
+						{% if iot_health_monitoring_enabled and (is_admin or user_role == 'editor' or (user_role == 'viewer' and ('iot' in allowed_pages or 'ppc' in allowed_pages))) %}
 						<li class="nav-item">
 							<a class="nav-link {{ 'active' if active_nav|default('') == 'iot' else '' }}" href="{{ url_for('iot') }}">
 								<span class="nav-icon">

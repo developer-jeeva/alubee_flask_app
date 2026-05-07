@@ -46,6 +46,8 @@ def _cache_set(key, value, ttl_sec=None):
 UNIT_OPTIONS = ["Unit I", "Unit II"]
 SHIFT_OPTIONS = ["Shift I", "Shift II"]
 DEPARTMENT_OPTIONS = ["PDC", "CNC"]
+# Temporary toggle: keep IoT health monitoring page hidden/disabled.
+IOT_HEALTH_MONITORING_ENABLED = False
 
 app = Flask(__name__)
 # Cloud Run / reverse proxies: trust X-Forwarded-* for correct scheme and URLs
@@ -700,8 +702,14 @@ def inject_nav_permissions():
             "allowed_pages": getattr(current_user, "allowed_pages", []),
             "user_role": getattr(current_user, "role", "viewer"),
             "is_admin": getattr(current_user, "role", None) == "admin",
+            "iot_health_monitoring_enabled": IOT_HEALTH_MONITORING_ENABLED,
         }
-    return {"allowed_pages": [], "user_role": "", "is_admin": False}
+    return {
+        "allowed_pages": [],
+        "user_role": "",
+        "is_admin": False,
+        "iot_health_monitoring_enabled": IOT_HEALTH_MONITORING_ENABLED,
+    }
 
 
 @app.route("/")
@@ -1981,6 +1989,9 @@ def ppc():
 @app.route("/iot")
 @login_required
 def iot():
+    if not IOT_HEALTH_MONITORING_ENABLED:
+        flash("IoT Health Monitoring is temporarily disabled.", "info")
+        return redirect(url_for("index"))
     if not _user_has_iot_access():
         abort(403)
     tab = (request.args.get("tab") or "realtime").strip().lower()
