@@ -644,7 +644,7 @@
 							<div class="col-12 d-flex flex-wrap align-items-center justify-content-between gap-2">
 								<h2 class="app-page-title production-section-title mb-0">Production</h2>
 								<div class="d-flex flex-wrap gap-2" role="group" aria-label="Download production history report">
-									<button type="button" class="btn btn-sm btn-outline-secondary" data-history-export-table="production-dashboard-table" data-history-export-file-prefix="production-history" title="Download currently visible rows as CSV (opens in Microsoft Excel). Respects Highlights.">
+									<button type="button" class="btn btn-sm btn-outline-secondary" data-history-export-table="production-dashboard-table" data-history-export-file-prefix="production-history" title="Download machine-wise CSV (opens in Excel). One row per machine; shot and quantity are per machine. Respects Highlights.">
 										<i class="fa-solid fa-file-excel me-1" aria-hidden="true"></i>Excel
 									</button>
 								</div>
@@ -693,6 +693,7 @@
 														{% set mock_qty_diff = [3, 3, 20, 3, 15][mock_idx] %}
 														{% set mock_rej_pct = [0.3, 0.4, 1.1, 0.6, 1.1][mock_idx] %}
 														<tr data-rejection-percent="{{ '%.2f'|format(mock_rej_pct) }}" data-original-index="{{ loop.index0 }}"
+															data-iot-context="{{ ctx_key|e }}"
 															data-export-date="{{ selected_date|e }}"
 															data-export-shift="{{ row.shift_id|e }}"
 															data-export-unit="{{ row.unit|e }}"
@@ -1117,6 +1118,11 @@
 						if (tableId === 'production-dashboard-table') {
 							nCol = 10;
 							out = [['Date', 'Shift', 'Unit', 'Department', 'Part Number', 'Machine', 'Plan', 'Shot', 'Quantity', 'Cycle Time']];
+							var mapNode = document.getElementById('iot-part-machine-map');
+							var partMachineMap = {};
+							try {
+								partMachineMap = JSON.parse(mapNode ? mapNode.textContent : '{}') || {};
+							} catch (e) { partMachineMap = {}; }
 							var anyProd = false;
 							bodyTrs.forEach(function (tr) {
 								if (!rowVisible(tr)) return;
@@ -1131,19 +1137,41 @@
 									return;
 								}
 								var cyc = tr.getAttribute('data-export-cycle-time-sec');
-								out.push([
-									tr.getAttribute('data-export-date') || '',
-									tr.getAttribute('data-export-shift') || '',
-									tr.getAttribute('data-export-unit') || '',
-									tr.getAttribute('data-export-department') || '',
-									tr.getAttribute('data-export-part') || '',
-									tr.getAttribute('data-export-machine') || '',
-									tr.getAttribute('data-export-plan') || '',
-									tr.getAttribute('data-export-shot') || '',
-									tr.getAttribute('data-export-quantity') || '',
-									cyc != null && cyc !== '' ? cyc : ''
-								]);
-								anyProd = true;
+								var cycStr = cyc != null && cyc !== '' ? cyc : '';
+								var ctx = tr.getAttribute('data-iot-context') || '';
+								var rows = ctx ? partMachineMap[ctx] : null;
+								var date = tr.getAttribute('data-export-date') || '';
+								var shift = tr.getAttribute('data-export-shift') || '';
+								var unit = tr.getAttribute('data-export-unit') || '';
+								var dept = tr.getAttribute('data-export-department') || '';
+								var part = tr.getAttribute('data-export-part') || '';
+								var plan = tr.getAttribute('data-export-plan') || '';
+								var aggShot = tr.getAttribute('data-export-shot') || '';
+								var aggQty = tr.getAttribute('data-export-quantity') || '';
+								var fallbackMach = tr.getAttribute('data-export-machine') || '';
+								if (rows && rows.length) {
+									var sorted = rows.slice().sort(function (a, b) {
+										return String(a.machine || '').localeCompare(String(b.machine || ''));
+									});
+									sorted.forEach(function (r) {
+										out.push([
+											date, shift, unit, dept, part,
+											r.machine != null && String(r.machine).trim() !== '' ? String(r.machine).trim() : '-',
+											plan,
+											r.shot != null ? String(r.shot) : '',
+											r.quantity != null ? String(r.quantity) : '',
+											cycStr
+										]);
+										anyProd = true;
+									});
+								} else {
+									out.push([
+										date, shift, unit, dept, part,
+										fallbackMach || '-',
+										plan, aggShot, aggQty, cycStr
+									]);
+									anyProd = true;
+								}
 							});
 							if (!anyProd) {
 								var padP = ['(No visible rows to export)'];
