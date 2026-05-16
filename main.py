@@ -725,8 +725,12 @@ def _firebase_project_id():
     )
 
 
+def _running_on_cloud_run():
+    return bool(os.environ.get("K_SERVICE"))
+
+
 def _init_firebase_app():
-    """Initialize Firebase once. File path, JSON env, or ADC (Cloud Run). Returns error text or None."""
+    """Initialize Firebase once. Cloud Run: ADC first; else file / JSON env. Returns error text or None."""
     try:
         firebase_admin.get_app()
         return None
@@ -736,6 +740,18 @@ def _init_firebase_app():
     project_id = _firebase_project_id()
     init_options = {"projectId": project_id} if project_id else None
 
+    def _try_adc():
+        cred = credentials.ApplicationDefault()
+        firebase_admin.initialize_app(cred, init_options)
+
+    # On Cloud Run, prefer IAM on the runtime service account (not a disabled JSON key).
+    if _running_on_cloud_run():
+        try:
+            _try_adc()
+            return None
+        except Exception as e:
+            app.logger.warning("Firebase ADC on Cloud Run failed: %s", e)
+
     json_raw = (os.environ.get("FIREBASE_CREDENTIALS_JSON") or "").strip()
     if json_raw:
         try:
@@ -744,6 +760,12 @@ def _init_firebase_app():
             return None
         except Exception as e:
             app.logger.exception("Firebase FIREBASE_CREDENTIALS_JSON failed")
+            if _running_on_cloud_run():
+                return (
+                    "Firebase secret key failed (often disabled after a leak). Remove "
+                    "FIREBASE_CREDENTIALS_JSON from Cloud Run and grant the Cloud Run "
+                    "service account Cloud Datastore User on whatsapp-approval-system."
+                )
             return f"Invalid FIREBASE_CREDENTIALS_JSON: {e}"
 
     path = _firebase_cred_path()
@@ -757,17 +779,15 @@ def _init_firebase_app():
             return str(e)
 
     try:
-        cred = credentials.ApplicationDefault()
-        firebase_admin.initialize_app(cred, init_options)
+        _try_adc()
         return None
     except Exception as e:
         app.logger.warning("Firebase Application Default Credentials failed: %s", e)
 
     return (
-        "Firebase is not configured for Cloud Run. Mount your service account JSON via "
-        "Secret Manager and set FIREBASE_CREDENTIALS_PATH (recommended), or set "
-        "FIREBASE_CREDENTIALS_JSON to the full JSON. Local dev: place firebase-adminsdk.json "
-        "in the repo root (parent of alubee_flask_app)."
+        "Firebase is not configured. On Cloud Run: grant the service account "
+        "Cloud Datastore User on project whatsapp-approval-system and set "
+        "FIREBASE_PROJECT_ID=whatsapp-approval-system (remove disabled JSON secrets)."
     )
 
 
@@ -868,53 +888,71 @@ def _get_firestore_client():
         return None, str(e)
 
 
+def _fetch_security_od_requests_inner(ist_day, db):
+    buf = []
+    for snap in db.collection("requests").stream():
+        d = snap.to_dict() or {}
+        if (d.get("type") or "").strip().upper() != "OD":
+            continue
+        ts = d.get("requested_datetime")
+        if ist_day is not None:
+            if _requested_datetime_ist_date(ts) != ist_day:
+                continue
+        buf.append((_firestore_ts_to_sort_key(ts), d, snap.id))
+    buf.sort(key=lambda x: x[0], reverse=True)
+    buf = buf[:200]
+    rows = []
+    for _, d, snap_id in buf:
+        md_ok = (d.get("md_status") or "").strip().upper() == "APPROVED"
+        rows.append(
+            {
+                "request_id": d.get("request_id") or snap_id,
+                "requested_datetime": _format_firestore_date_ist(
+                    d.get("requested_datetime")
+                ),
+                "employee_id": d.get("employee_id") or "",
+                "employee_name": d.get("employee_name") or "",
+                "department": d.get("department") or "",
+                "reason": d.get("reason") or "",
+                "manager": d.get("manager") or "",
+                "manager_status": d.get("manager_status") or "",
+                "md_status": d.get("md_status") or "",
+                "fully_approved": md_ok,
+                "security_out_at": _format_firestore_time_ist_12h(
+                    d.get("security_out_at")
+                ),
+                "security_in_at": _format_firestore_time_ist_12h(
+                    d.get("security_in_at")
+                ),
+            }
+        )
+    return rows
+
+
 def fetch_security_od_requests(ist_day=None):
     """Load OD requests for one IST calendar day (``requested_datetime``), newest first, cap 200."""
     db, err = _get_firestore_client()
     if err:
         return [], err
     try:
-        buf = []
-        for snap in db.collection("requests").stream():
-            d = snap.to_dict() or {}
-            if (d.get("type") or "").strip().upper() != "OD":
-                continue
-            ts = d.get("requested_datetime")
-            if ist_day is not None:
-                if _requested_datetime_ist_date(ts) != ist_day:
-                    continue
-            buf.append((_firestore_ts_to_sort_key(ts), d, snap.id))
-        buf.sort(key=lambda x: x[0], reverse=True)
-        buf = buf[:200]
-        rows = []
-        for _, d, snap_id in buf:
-            md_ok = (d.get("md_status") or "").strip().upper() == "APPROVED"
-            rows.append(
-                {
-                    "request_id": d.get("request_id") or snap_id,
-                    "requested_datetime": _format_firestore_date_ist(
-                        d.get("requested_datetime")
-                    ),
-                    "employee_id": d.get("employee_id") or "",
-                    "employee_name": d.get("employee_name") or "",
-                    "department": d.get("department") or "",
-                    "reason": d.get("reason") or "",
-                    "manager": d.get("manager") or "",
-                    "manager_status": d.get("manager_status") or "",
-                    "md_status": d.get("md_status") or "",
-                    "fully_approved": md_ok,
-                    "security_out_at": _format_firestore_time_ist_12h(
-                        d.get("security_out_at")
-                    ),
-                    "security_in_at": _format_firestore_time_ist_12h(
-                        d.get("security_in_at")
-                    ),
-                }
-            )
-        return rows, None
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_fetch_security_od_requests_inner, ist_day, db)
+            return future.result(timeout=25), None
+    except TimeoutError:
+        app.logger.error("Firestore security OD fetch timed out")
+        return [], (
+            "Firestore request timed out. Check that the Cloud Run service account has "
+            "Cloud Datastore User on whatsapp-approval-system."
+        )
     except Exception as e:
         app.logger.exception("Firestore security OD fetch failed")
-        return [], str(e)
+        msg = str(e)
+        if "403" in msg or "permission" in msg.lower() or "disabled" in msg.lower():
+            msg += (
+                " Grant the Cloud Run service account Cloud Datastore User on "
+                "whatsapp-approval-system and remove disabled FIREBASE_CREDENTIALS_JSON."
+            )
+        return [], msg
 
 
 def _security_record_od_gate(request_id: str, action: str):

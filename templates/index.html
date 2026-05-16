@@ -126,6 +126,10 @@
 			window.hideAppLoading = function () { busy(false); };
 			busy(true);
 			window.addEventListener('load', function () { busy(false); });
+			document.addEventListener('DOMContentLoaded', function () {
+				setTimeout(function () { busy(false); }, 400);
+			});
+			setTimeout(function () { busy(false); }, 8000);
 			window.addEventListener('pageshow', function (e) {
 				if (e.persisted) busy(false);
 			});
