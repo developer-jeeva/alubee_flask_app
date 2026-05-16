@@ -1,4 +1,4 @@
-# Production Dockerfile for Cloud Run (no service account key file in image)
+# Production Dockerfile for Cloud Run (includes firebase-adminsdk.json for testing)
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -12,6 +12,7 @@ COPY . .
 
 # Cloud Run sets PORT (default 8080)
 ENV PORT=8080
+ENV FIREBASE_PROJECT_ID=whatsapp-approval-system
 EXPOSE 8080
 
 # Run with gunicorn for production. Build must be from production folder so main.py and auth.py are in /app.

@@ -14,6 +14,7 @@ except ImportError:
     ZoneInfo = None  # Python < 3.9
 from google.cloud import bigquery
 from google.oauth2 import service_account
+import json
 import os
 import re
 import secrets
@@ -706,11 +707,68 @@ def _user_can_access_security():
 
 
 def _firebase_cred_path():
-    env_path = (os.environ.get("FIREBASE_CREDENTIALS_PATH") or "").strip()
-    if env_path:
-        return env_path
+    for key in ("FIREBASE_CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS"):
+        env_path = (os.environ.get(key) or "").strip()
+        if env_path:
+            return env_path
     base = os.path.dirname(os.path.abspath(__file__))
+    in_app = os.path.join(base, "firebase-adminsdk.json")
+    if os.path.isfile(in_app):
+        return in_app
     return os.path.normpath(os.path.join(os.path.dirname(base), "firebase-adminsdk.json"))
+
+
+def _firebase_project_id():
+    return (
+        (os.environ.get("FIREBASE_PROJECT_ID") or "").strip()
+        or "whatsapp-approval-system"
+    )
+
+
+def _init_firebase_app():
+    """Initialize Firebase once. File path, JSON env, or ADC (Cloud Run). Returns error text or None."""
+    try:
+        firebase_admin.get_app()
+        return None
+    except ValueError:
+        pass
+
+    project_id = _firebase_project_id()
+    init_options = {"projectId": project_id} if project_id else None
+
+    json_raw = (os.environ.get("FIREBASE_CREDENTIALS_JSON") or "").strip()
+    if json_raw:
+        try:
+            cred = credentials.Certificate(json.loads(json_raw))
+            firebase_admin.initialize_app(cred, init_options)
+            return None
+        except Exception as e:
+            app.logger.exception("Firebase FIREBASE_CREDENTIALS_JSON failed")
+            return f"Invalid FIREBASE_CREDENTIALS_JSON: {e}"
+
+    path = _firebase_cred_path()
+    if path and os.path.isfile(path):
+        try:
+            cred = credentials.Certificate(path)
+            firebase_admin.initialize_app(cred, init_options)
+            return None
+        except Exception as e:
+            app.logger.exception("Firebase credentials file failed: %s", path)
+            return str(e)
+
+    try:
+        cred = credentials.ApplicationDefault()
+        firebase_admin.initialize_app(cred, init_options)
+        return None
+    except Exception as e:
+        app.logger.warning("Firebase Application Default Credentials failed: %s", e)
+
+    return (
+        "Firebase is not configured for Cloud Run. Mount your service account JSON via "
+        "Secret Manager and set FIREBASE_CREDENTIALS_PATH (recommended), or set "
+        "FIREBASE_CREDENTIALS_JSON to the full JSON. Local dev: place firebase-adminsdk.json "
+        "in the repo root (parent of alubee_flask_app)."
+    )
 
 
 def _ist_tzinfo():
@@ -800,21 +858,13 @@ def _firestore_ts_to_sort_key(val):
 
 
 def _get_firestore_client():
-    path = _firebase_cred_path()
-    if not path or not os.path.isfile(path):
-        return None, (
-            "Firebase credentials not found. Set FIREBASE_CREDENTIALS_PATH or place "
-            "firebase-adminsdk.json next to the project root (parent of alubee_flask_app)."
-        )
+    err = _init_firebase_app()
+    if err:
+        return None, err
     try:
-        try:
-            firebase_admin.get_app()
-        except ValueError:
-            cred = credentials.Certificate(path)
-            firebase_admin.initialize_app(cred)
         return firestore.client(), None
     except Exception as e:
-        app.logger.exception("Firebase initialization failed")
+        app.logger.exception("Firestore client failed")
         return None, str(e)
 
 

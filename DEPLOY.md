@@ -60,6 +60,63 @@ gcloud run deploy alubee-app \
 - **GOOGLE_CLOUD_PROJECT** – Usually set automatically by Cloud Run. Override only if needed.
 - **BQ_CREDENTIALS_PATH** – Do **not** set on Cloud Run. Only for local dev with a key file outside the repo.
 
+### Firestore (Security → On Duty) — Secret Manager
+
+The Docker image **never** includes `firebase-adminsdk.json`. You create the secret once; the **Cloud Run service** holds the reference (not your GitHub repo). GitHub / “Deploy from repository” only ships new container images — **existing secrets and env vars on the service stay** unless a deploy script clears them.
+
+**1. Create the secret** (once, from your machine; file is at repo root):
+
+```bash
+gcloud secrets create firebase-adminsdk --data-file=firebase-adminsdk.json
+```
+
+**2. Let the Cloud Run runtime read it** (replace `PROJECT_ID` and service account if you use a custom one):
+
+```bash
+export PROJECT_ID=your-gcp-project-id
+export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
+
+gcloud secrets add-iam-policy-binding firebase-adminsdk \
+  --project=$PROJECT_ID \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+```
+
+**3. Attach secret to the Cloud Run service** (once; survives future GitHub deploys).
+
+**Option A — Console (easiest with GitHub deploy):**
+
+1. [Cloud Run](https://console.cloud.google.com/run) → your service (e.g. `alubee-app`) → **Edit & deploy new revision**
+2. **Variables & secrets** → **Secrets exposed as environment variables**
+3. Add:
+   - Name: `FIREBASE_CREDENTIALS_JSON`
+   - Secret: `firebase-adminsdk`
+   - Version: `latest`
+4. Under **Environment variables**, add: `FIREBASE_PROJECT_ID` = `whatsapp-approval-system`
+5. **Deploy** (this revision only updates config; code can still come from GitHub later)
+
+**Option B — gcloud** (same effect; run once after you know `SERVICE` and `REGION`):
+
+```bash
+gcloud run services update alubee-app \
+  --project=$PROJECT_ID \
+  --region=us-central1 \
+  --set-secrets=FIREBASE_CREDENTIALS_JSON=firebase-adminsdk:latest \
+  --update-env-vars=FIREBASE_PROJECT_ID=whatsapp-approval-system
+```
+
+**Option C — mount as a file** (if you prefer a path instead of JSON env):
+
+```bash
+gcloud run services update alubee-app \
+  --project=$PROJECT_ID \
+  --region=us-central1 \
+  --set-secrets=/secrets/firebase-adminsdk.json=firebase-adminsdk:latest \
+  --update-env-vars=FIREBASE_CREDENTIALS_PATH=/secrets/firebase-adminsdk.json,FIREBASE_PROJECT_ID=whatsapp-approval-system
+```
+
+After step 3, push to GitHub as usual; new revisions should still see Firestore. If Security breaks after a deploy, check the GitHub/Cloud Build trigger is **not** using `--clear-secrets` or `--clear-env-vars`.
+
 ### SQLite auth database on Cloud Run
 
 Users are stored in `instance/app.db` on the container filesystem. That storage is **ephemeral**: new revisions or extra instances each get an empty DB, and the default **admin@alubee.com** user is recreated on startup. For durable accounts across deploys or multiple instances, move auth to Cloud SQL, Firestore, or another managed store (future change).
