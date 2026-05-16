@@ -1,0 +1,312 @@
+{% extends "index.html" %}
+
+{% block content %}
+<style>
+	.security-od-card {
+		box-shadow: 0 0.35rem 1rem rgba(15, 23, 42, 0.1), 0 0.125rem 0.35rem rgba(15, 23, 42, 0.06);
+		border: 1px solid #e9ecef;
+	}
+	.security-od-scroll {
+		overflow-x: auto;
+		overflow-y: visible;
+		-webkit-overflow-scrolling: touch;
+		border-radius: 0 0 0.35rem 0.35rem;
+		background: #fff;
+	}
+	.security-od-table {
+		font-size: 0.9rem;
+		margin-bottom: 0;
+		width: max-content;
+		min-width: 100%;
+		--security-freeze-emp-w: 12rem;
+		--security-freeze-action-w: 5.75rem;
+	}
+	.security-od-table thead th {
+		font-weight: 600;
+		font-size: 0.8125rem;
+		color: #343a40;
+		border-bottom-width: 2px;
+		white-space: nowrap;
+		vertical-align: middle;
+		padding: 0.75rem 0.85rem;
+	}
+	.security-od-table tbody tr {
+		background-color: #fff;
+	}
+	.security-od-table tbody td {
+		vertical-align: middle;
+		padding: 0.65rem 0.85rem;
+		border-color: #e9ecef;
+		white-space: nowrap;
+		background-color: #fff;
+	}
+	.security-od-table thead th.cell-visiting,
+	.security-od-table tbody td.cell-visiting {
+		white-space: normal;
+		word-wrap: break-word;
+		overflow-wrap: break-word;
+		min-width: 10rem;
+		max-width: 22rem;
+	}
+	/* Frozen block: Employee + Action (scroll starts after Action) */
+	.security-od-table thead th.cell-freeze-emp,
+	.security-od-table tbody td.cell-freeze-emp {
+		position: sticky;
+		left: 0;
+		z-index: 2;
+		min-width: 8rem;
+		width: max-content;
+		max-width: none;
+		overflow: visible;
+		white-space: nowrap;
+		background-color: #fff;
+	}
+	.security-od-table thead th.cell-freeze-action,
+	.security-od-table tbody td.cell-freeze-action {
+		position: sticky;
+		left: var(--security-freeze-emp-w);
+		z-index: 2;
+		min-width: var(--security-freeze-action-w);
+		white-space: nowrap;
+		background-color: #fff;
+		box-shadow: 6px 0 10px -6px rgba(0, 0, 0, 0.14);
+		border-right: 1px solid #dee2e6;
+	}
+	.security-od-table thead th.cell-freeze-emp,
+	.security-od-table thead th.cell-freeze-action {
+		z-index: 4;
+		background-color: #e9ecef;
+	}
+	.security-od-table tbody tr:hover > td.cell-freeze-emp,
+	.security-od-table tbody tr:hover > td.cell-freeze-action {
+		background-color: #f8f9fa !important;
+	}
+	.security-od-table.table-hover tbody tr:hover > td:not([class*="security-appr"]) {
+		background-color: #f8f9fa;
+	}
+	.security-od-table .cell-date {
+		font-variant-numeric: tabular-nums;
+		color: #343a40;
+	}
+	.security-od-table .cell-dept {
+		font-weight: 500;
+		color: #212529;
+	}
+	.security-od-table tbody td.security-appr-approved {
+		background-color: rgba(25, 135, 84, 0.2) !important;
+		color: #0a3622;
+		font-weight: 600;
+		box-shadow: inset 4px 0 0 0 #198754;
+	}
+	.security-od-table tbody td.security-appr-denied {
+		background-color: rgba(220, 53, 69, 0.16) !important;
+		color: #58151c;
+		font-weight: 600;
+		box-shadow: inset 4px 0 0 0 #dc3545;
+	}
+	.security-od-table tbody td.security-appr-pending {
+		background-color: rgba(255, 193, 7, 0.3) !important;
+		color: #533f03;
+		font-weight: 600;
+		box-shadow: inset 4px 0 0 0 #ffc107;
+	}
+	.security-od-table tbody td.security-appr-na {
+		background-color: rgba(108, 117, 125, 0.14) !important;
+		color: #495057;
+		font-weight: 500;
+		box-shadow: inset 4px 0 0 0 #adb5bd;
+	}
+	.security-od-table tbody tr:hover td.security-appr-approved {
+		background-color: rgba(25, 135, 84, 0.28) !important;
+	}
+	.security-od-table tbody tr:hover td.security-appr-denied {
+		background-color: rgba(220, 53, 69, 0.22) !important;
+	}
+	.security-od-table tbody tr:hover td.security-appr-pending {
+		background-color: rgba(255, 193, 7, 0.38) !important;
+	}
+	.security-od-table tbody tr:hover td.security-appr-na {
+		background-color: rgba(108, 117, 125, 0.2) !important;
+	}
+	.security-od-toolbar {
+		background: linear-gradient(180deg, #f8f9fa 0%, #fff 100%);
+		border-bottom: 1px solid #e9ecef;
+	}
+	.security-od-toolbar .form-label {
+		font-weight: 600;
+		color: #495057;
+	}
+	.security-od-toolbar input[type="date"] {
+		min-width: 11rem;
+	}
+</style>
+<div class="app-content pt-3 p-md-3 p-lg-4">
+	<div class="container-xl">
+		<ul class="nav nav-tabs mb-3" id="securityTabs" role="tablist">
+			{% for tab_key, tab_label in security_tabs %}
+			<li class="nav-item" role="presentation">
+				<a
+					class="nav-link {% if selected_tab == tab_key %}active{% endif %}"
+					href="{{ url_for('security', tab=tab_key, date=selected_date_iso) }}"
+					role="tab"
+					aria-selected="{% if selected_tab == tab_key %}true{% else %}false{% endif %}"
+				>{{ tab_label }}</a>
+			</li>
+			{% endfor %}
+		</ul>
+
+		{% if selected_tab == 'on-duty' and firestore_error %}
+		<div class="alert alert-warning mb-3 shadow-sm" role="alert">
+			<strong>Could not load OD requests.</strong> {{ firestore_error }}
+		</div>
+		{% endif %}
+
+		{% if selected_tab == 'on-duty' %}
+		<div class="app-card app-card-settings security-od-card">
+			<div class="app-card-body p-3 security-od-toolbar">
+				<form method="get" action="{{ url_for('security') }}" class="d-flex flex-wrap align-items-end gap-3">
+					<input type="hidden" name="tab" value="on-duty">
+					<div>
+						<label for="security-od-date" class="form-label small mb-1">Date (IST)</label>
+						<input id="security-od-date" type="date" name="date" class="form-control form-control-sm" value="{{ selected_date_iso }}">
+					</div>
+					<div class="d-flex gap-2">
+						<button type="submit" class="btn btn-sm btn-primary px-3">Refresh</button>
+						<button type="button" class="btn btn-sm btn-outline-secondary px-3" id="security-od-refresh-today" title="Load today (IST)">Today</button>
+					</div>
+				</form>
+			</div>
+			<div class="app-card-body p-0 p-md-0">
+				<div class="table-responsive security-od-scroll">
+					<table class="table table-hover security-od-table mb-0">
+						<thead class="table-light">
+							<tr>
+								<th scope="col" class="cell-freeze-emp">Employee</th>
+								<th scope="col" class="cell-freeze-action">Action</th>
+								<th scope="col">Requested Date</th>
+								<th scope="col">Department</th>
+								<th scope="col" class="cell-visiting">Visiting To</th>
+								<th scope="col">Manager Approval</th>
+								<th scope="col">MD Approval</th>
+								<th scope="col" class="cell-date">Out time</th>
+								<th scope="col" class="cell-date">In time</th>
+							</tr>
+						</thead>
+						<tbody>
+							{% if od_requests %}
+							{% for row in od_requests %}
+							<tr>
+								<td class="cell cell-freeze-emp">{{ (row.employee_name or row.employee_id)|sentence_case }}</td>
+								<td class="cell cell-freeze-action">
+									{% if row.security_in_at %}
+									<button type="button" class="btn btn-sm btn-secondary" disabled>Closed</button>
+									{% elif row.security_out_at %}
+									<button type="button" class="btn btn-sm btn-success od-gate-btn" data-request-id="{{ row.request_id }}" data-action="in">IN</button>
+									{% elif row.fully_approved %}
+									<button type="button" class="btn btn-sm btn-primary od-gate-btn" data-request-id="{{ row.request_id }}" data-action="out">OUT</button>
+									{% else %}
+									<button type="button" class="btn btn-sm btn-outline-secondary" disabled title="Enabled when MD approval is Approved">OUT</button>
+									{% endif %}
+								</td>
+								<td class="cell cell-date">{{ row.requested_datetime or '—' }}</td>
+								<td class="cell cell-dept">{{ row.department }}</td>
+								<td class="cell cell-visiting">{{ row.reason|sentence_case }}</td>
+								<td class="cell {{ row.manager_status|approval_cell_class }}">{{ row.manager_status|sentence_case }}</td>
+								<td class="cell {{ row.md_status|approval_cell_class }}">{{ row.md_status|sentence_case }}</td>
+								<td class="cell cell-date">{{ row.security_out_at or '—' }}</td>
+								<td class="cell cell-date">{{ row.security_in_at or '—' }}</td>
+							</tr>
+							{% endfor %}
+							{% else %}
+							<tr>
+								<td colspan="9" class="cell text-center text-muted py-5">No OD requests for this date.</td>
+							</tr>
+							{% endif %}
+						</tbody>
+					</table>
+				</div>
+			</div>
+		</div>
+		{% else %}
+		<div class="app-card app-card-settings security-od-card">
+			<div class="app-card-body p-3 security-od-toolbar">
+				<form method="get" action="{{ url_for('security') }}" class="d-flex flex-wrap align-items-end gap-3">
+					<input type="hidden" name="tab" value="vehicle-request">
+					<div>
+						<label for="security-vr-date" class="form-label small mb-1">Date (IST)</label>
+						<input id="security-vr-date" type="date" name="date" class="form-control form-control-sm" value="{{ selected_date_iso }}">
+					</div>
+					<div class="d-flex gap-2">
+						<button type="submit" class="btn btn-sm btn-primary px-3">Refresh</button>
+						<button type="button" class="btn btn-sm btn-outline-secondary px-3" id="security-vr-refresh-today" title="Load today (IST)">Today</button>
+					</div>
+				</form>
+			</div>
+			<div class="app-card-body p-4">
+				<p class="text-muted mb-0 text-center py-4">No vehicle requests for this date.</p>
+			</div>
+		</div>
+		{% endif %}
+	</div>
+</div>
+<script>
+(function () {
+	function syncSecurityFreezeColumns() {
+		var table = document.querySelector(".security-od-table");
+		if (!table) return;
+		var cells = table.querySelectorAll("th.cell-freeze-emp, td.cell-freeze-emp");
+		var maxW = 0;
+		cells.forEach(function (el) {
+			maxW = Math.max(maxW, el.getBoundingClientRect().width);
+		});
+		if (maxW > 0) {
+			table.style.setProperty("--security-freeze-emp-w", Math.ceil(maxW) + "px");
+		}
+	}
+	syncSecurityFreezeColumns();
+	window.addEventListener("resize", syncSecurityFreezeColumns);
+
+	var endpoint = {{ url_for('security_od_gate') | tojson }};
+	var securityOnDutyUrl = {{ url_for('security', tab='on-duty') | tojson }};
+	var securityVehicleUrl = {{ url_for('security', tab='vehicle-request') | tojson }};
+	var todayBtnOd = document.getElementById("security-od-refresh-today");
+	if (todayBtnOd) {
+		todayBtnOd.addEventListener("click", function () {
+			window.location.href = securityOnDutyUrl;
+		});
+	}
+	var todayBtnVr = document.getElementById("security-vr-refresh-today");
+	if (todayBtnVr) {
+		todayBtnVr.addEventListener("click", function () {
+			window.location.href = securityVehicleUrl;
+		});
+	}
+	document.querySelectorAll(".od-gate-btn").forEach(function (btn) {
+		btn.addEventListener("click", function () {
+			var requestId = this.getAttribute("data-request-id");
+			var action = this.getAttribute("data-action");
+			if (!requestId || !action) return;
+			this.disabled = true;
+			fetch(endpoint, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ request_id: requestId, action: action }),
+			})
+				.then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+				.then(function (x) {
+					if (!x.ok || !x.j.ok) {
+						alert((x.j && x.j.error) || "Could not save.");
+						btn.disabled = false;
+						return;
+					}
+					window.location.reload();
+				})
+				.catch(function () {
+					alert("Network error.");
+					btn.disabled = false;
+				});
+		});
+	});
+})();
+</script>
+{% endblock %}

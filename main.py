@@ -1,4 +1,4 @@
-from flask import Flask, render_template, redirect, url_for, request, flash, abort
+from flask import Flask, render_template, redirect, url_for, request, flash, abort, jsonify
 from flask_login import (
     LoginManager,
     UserMixin,
@@ -7,7 +7,7 @@ from flask_login import (
     login_required,
     current_user,
 )
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, timezone
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -22,6 +22,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import auth
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 # Simple TTL cache for expensive read-only BigQuery results (key -> (expiry_ts, value))
 _cache_ttl_sec = 60
@@ -111,15 +113,64 @@ def minutes_hm(value):
     return f"{hours}H {rem}M"
 
 
+_ROMAN_NUMERAL_CHARS = frozenset("IVXLCDM")
+
+
+def _sentence_case_word(word):
+    """Title-case one token; keep Roman numerals (e.g. II, III) uppercase."""
+    if not word:
+        return word
+    up = word.upper()
+    if len(up) <= 8 and all(c in _ROMAN_NUMERAL_CHARS for c in up):
+        return up
+    return word[:1].upper() + word[1:].lower()
+
+
 @app.template_filter("sentence_case")
 def sentence_case(value):
-    """First character uppercase, rest lowercase; '-' unchanged."""
+    """Readable label case for table text: words split on whitespace/underscore; '-' when empty."""
     if value is None or value == "":
         return "-"
     s = str(value).strip()
     if not s or s == "-":
         return "-"
-    return s[0].upper() + s[1:].lower()
+    if s.upper() == "N/A":
+        return "N/A"
+    compact = re.sub(r"[\s\-+]+", "", s)
+    if compact.isdigit():
+        return s
+    # Treat underscores like spaces so e.g. UNIT_II -> Unit II
+    normalized = re.sub(r"[_\s]+", " ", s)
+    parts = [p for p in normalized.split(" ") if p]
+    if not parts:
+        return "-"
+    return " ".join(_sentence_case_word(p) for p in parts)
+
+
+@app.template_filter("approval_cell_class")
+def approval_cell_class(value):
+    """CSS class for OD approval cells: approved (green), denied (red), pending (yellow)."""
+    if value is None:
+        return "security-appr-pending"
+    s = str(value).strip().lower()
+    if not s or s in ("-", "—"):
+        return "security-appr-pending"
+    if s in ("n/a", "na", "none") or s.startswith("n/a"):
+        return "security-appr-na"
+    if (
+        "deny" in s
+        or "rejected" in s
+        or "reject" in s
+        or "not approved" in s
+        or "disapprov" in s
+        or s == "no"
+    ):
+        return "security-appr-denied"
+    if "pending" in s or "await" in s or "wait" in s or "submitted" in s:
+        return "security-appr-pending"
+    if "approv" in s:
+        return "security-appr-approved"
+    return "security-appr-pending"
 
 
 def _init_bigquery_client():
@@ -606,7 +657,7 @@ class User(UserMixin):
         conn.close()
         if not row:
             return None
-        role = row["role"] or "viewer"
+        role = (row["role"] or "viewer").strip().lower()
         allowed = auth.get_viewer_pages(row["id"]) if role == "viewer" else []
         return User(
             id_=row["id"],
@@ -641,6 +692,219 @@ def _user_has_iot_access():
         return True
     pages = getattr(current_user, "allowed_pages", None) or []
     return "iot" in pages or "ppc" in pages
+
+
+def _user_can_access_security():
+    """Security / On Duty: admin/editor, or viewer with 'security' or 'documents' page."""
+    if not current_user.is_authenticated:
+        return False
+    role = (getattr(current_user, "role", "") or "").strip().lower()
+    if role in ("admin", "editor"):
+        return True
+    pages = getattr(current_user, "allowed_pages", None) or []
+    return "security" in pages or "documents" in pages
+
+
+def _firebase_cred_path():
+    env_path = (os.environ.get("FIREBASE_CREDENTIALS_PATH") or "").strip()
+    if env_path:
+        return env_path
+    base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.normpath(os.path.join(os.path.dirname(base), "firebase-adminsdk.json"))
+
+
+def _ist_tzinfo():
+    """Asia/Kolkata; fixed offset fallback if zoneinfo is unavailable."""
+    if ZoneInfo:
+        return ZoneInfo("Asia/Kolkata")
+    return timezone(timedelta(hours=5, minutes=30))
+
+
+def _ist_today_date():
+    return datetime.now(_ist_tzinfo()).date()
+
+
+def _firestore_value_to_utc_datetime(val):
+    """Normalize Firestore / datetime values to timezone-aware UTC."""
+    if val is None:
+        return None
+    try:
+        if hasattr(val, "timestamp") and callable(val.timestamp):
+            return datetime.fromtimestamp(val.timestamp(), tz=timezone.utc)
+        if isinstance(val, datetime):
+            if val.tzinfo is None:
+                return val.replace(tzinfo=timezone.utc)
+            return val.astimezone(timezone.utc)
+    except Exception:
+        pass
+    return None
+
+
+def _requested_datetime_ist_date(val):
+    """Calendar date in IST for the request's ``requested_datetime`` (for table filtering)."""
+    dtu = _firestore_value_to_utc_datetime(val)
+    if dtu is None:
+        return None
+    try:
+        return dtu.astimezone(_ist_tzinfo()).date()
+    except Exception:
+        return None
+
+
+def _parse_security_table_date(date_str, default_day):
+    if date_str:
+        try:
+            return datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            pass
+    return default_day
+
+
+def _format_firestore_date_ist(val):
+    """Date only in IST: DD-MM-YYYY."""
+    if val is None:
+        return ""
+    try:
+        dtu = _firestore_value_to_utc_datetime(val)
+        if dtu is None:
+            return str(val)
+        return dtu.astimezone(_ist_tzinfo()).strftime("%d-%m-%Y")
+    except Exception:
+        return str(val)
+
+
+def _format_firestore_time_ist_12h(val):
+    """Time only in IST, 12-hour with AM/PM (e.g. 04:40 PM)."""
+    if val is None:
+        return ""
+    try:
+        dtu = _firestore_value_to_utc_datetime(val)
+        if dtu is None:
+            return str(val)
+        return dtu.astimezone(_ist_tzinfo()).strftime("%I:%M %p")
+    except Exception:
+        return str(val)
+
+
+def _firestore_ts_to_sort_key(val):
+    if val is None:
+        return 0.0
+    try:
+        if hasattr(val, "timestamp") and callable(val.timestamp):
+            return float(val.timestamp())
+        if isinstance(val, datetime):
+            return val.timestamp()
+    except Exception:
+        pass
+    return 0.0
+
+
+def _get_firestore_client():
+    path = _firebase_cred_path()
+    if not path or not os.path.isfile(path):
+        return None, (
+            "Firebase credentials not found. Set FIREBASE_CREDENTIALS_PATH or place "
+            "firebase-adminsdk.json next to the project root (parent of alubee_flask_app)."
+        )
+    try:
+        try:
+            firebase_admin.get_app()
+        except ValueError:
+            cred = credentials.Certificate(path)
+            firebase_admin.initialize_app(cred)
+        return firestore.client(), None
+    except Exception as e:
+        app.logger.exception("Firebase initialization failed")
+        return None, str(e)
+
+
+def fetch_security_od_requests(ist_day=None):
+    """Load OD requests for one IST calendar day (``requested_datetime``), newest first, cap 200."""
+    db, err = _get_firestore_client()
+    if err:
+        return [], err
+    try:
+        buf = []
+        for snap in db.collection("requests").stream():
+            d = snap.to_dict() or {}
+            if (d.get("type") or "").strip().upper() != "OD":
+                continue
+            ts = d.get("requested_datetime")
+            if ist_day is not None:
+                if _requested_datetime_ist_date(ts) != ist_day:
+                    continue
+            buf.append((_firestore_ts_to_sort_key(ts), d, snap.id))
+        buf.sort(key=lambda x: x[0], reverse=True)
+        buf = buf[:200]
+        rows = []
+        for _, d, snap_id in buf:
+            md_ok = (d.get("md_status") or "").strip().upper() == "APPROVED"
+            rows.append(
+                {
+                    "request_id": d.get("request_id") or snap_id,
+                    "requested_datetime": _format_firestore_date_ist(
+                        d.get("requested_datetime")
+                    ),
+                    "employee_id": d.get("employee_id") or "",
+                    "employee_name": d.get("employee_name") or "",
+                    "department": d.get("department") or "",
+                    "reason": d.get("reason") or "",
+                    "manager": d.get("manager") or "",
+                    "manager_status": d.get("manager_status") or "",
+                    "md_status": d.get("md_status") or "",
+                    "fully_approved": md_ok,
+                    "security_out_at": _format_firestore_time_ist_12h(
+                        d.get("security_out_at")
+                    ),
+                    "security_in_at": _format_firestore_time_ist_12h(
+                        d.get("security_in_at")
+                    ),
+                }
+            )
+        return rows, None
+    except Exception as e:
+        app.logger.exception("Firestore security OD fetch failed")
+        return [], str(e)
+
+
+def _security_record_od_gate(request_id: str, action: str):
+    """Persist OUT / IN timestamps on the OD request document. Returns (ok, error_message)."""
+    db, err = _get_firestore_client()
+    if err:
+        return False, err
+    action = (action or "").strip().lower()
+    if action not in ("out", "in"):
+        return False, "Invalid action"
+    rid = (request_id or "").strip()
+    if not rid:
+        return False, "Missing request id"
+    try:
+        ref = db.collection("requests").document(rid)
+        snap = ref.get()
+        if not snap.exists:
+            return False, "Request not found"
+        d = snap.to_dict() or {}
+        if (d.get("type") or "").strip().upper() != "OD":
+            return False, "Not an OD request"
+        if (d.get("md_status") or "").strip().upper() != "APPROVED":
+            return False, "OD is not fully approved yet"
+        out_at = d.get("security_out_at")
+        in_at = d.get("security_in_at")
+        now = datetime.now(timezone.utc)
+        if action == "out":
+            if out_at is not None:
+                return False, "Out time is already recorded"
+            ref.update({"security_out_at": now})
+            return True, None
+        if in_at is not None:
+            return False, "This visit is already closed"
+        if out_at is None:
+            return False, "Record OUT before IN"
+        ref.update({"security_in_at": now})
+        return True, None
+    except Exception as e:
+        app.logger.exception("security OD gate update failed")
+        return False, str(e)
 
 
 def require_page(page_key):
@@ -698,16 +962,23 @@ def _fetch_history_dashboard_rows():
 def inject_nav_permissions():
     """Make allowed_pages and is_admin available in templates."""
     if current_user.is_authenticated:
+        role = (getattr(current_user, "role", None) or "viewer").strip().lower()
+        pages = getattr(current_user, "allowed_pages", None) or []
+        show_security = role in ("admin", "editor") or (
+            role == "viewer" and ("security" in pages or "documents" in pages)
+        )
         return {
-            "allowed_pages": getattr(current_user, "allowed_pages", []),
-            "user_role": getattr(current_user, "role", "viewer"),
-            "is_admin": getattr(current_user, "role", None) == "admin",
+            "allowed_pages": pages,
+            "user_role": role,
+            "is_admin": role == "admin",
+            "show_security_nav": show_security,
             "iot_health_monitoring_enabled": IOT_HEALTH_MONITORING_ENABLED,
         }
     return {
         "allowed_pages": [],
         "user_role": "",
         "is_admin": False,
+        "show_security_nav": False,
         "iot_health_monitoring_enabled": IOT_HEALTH_MONITORING_ENABLED,
     }
 
@@ -3167,6 +3438,52 @@ def documents():
     return render_template("under_development.html", active_nav="documents")
 
 
+SECURITY_TABS = (
+    ("on-duty", "On Duty"),
+    ("vehicle-request", "Vehicle Request"),
+)
+
+
+@app.route("/security")
+@login_required
+def security():
+    if not _user_can_access_security():
+        abort(403)
+    tab = (request.args.get("tab") or "on-duty").strip().lower()
+    allowed_tabs = {k for k, _ in SECURITY_TABS}
+    if tab not in allowed_tabs:
+        tab = "on-duty"
+    ist_today = _ist_today_date()
+    selected_day = _parse_security_table_date(request.args.get("date"), ist_today)
+    od_requests = []
+    firestore_error = None
+    if tab == "on-duty":
+        od_requests, firestore_error = fetch_security_od_requests(ist_day=selected_day)
+    return render_template(
+        "security.html",
+        active_nav="security",
+        security_tabs=SECURITY_TABS,
+        selected_tab=tab,
+        od_requests=od_requests,
+        firestore_error=firestore_error,
+        selected_date_iso=selected_day.strftime("%Y-%m-%d"),
+    )
+
+
+@app.route("/security/api/od-gate", methods=["POST"])
+@login_required
+def security_od_gate():
+    if not _user_can_access_security():
+        abort(403)
+    payload = request.get_json(silent=True) or {}
+    request_id = (payload.get("request_id") or "").strip()
+    action = (payload.get("action") or "").strip()
+    ok, err = _security_record_od_gate(request_id, action)
+    if not ok:
+        return jsonify({"ok": False, "error": err or "Update failed"}), 400
+    return jsonify({"ok": True})
+
+
 @app.route("/help")
 @login_required
 def help():
@@ -3188,7 +3505,7 @@ def login():
         if not user_row or not auth.check_password(user_row, password):
             flash("Invalid email or password.", "danger")
             return render_template("login.html")
-        role = user_row.get("role") or "viewer"
+        role = (user_row.get("role") or "viewer").strip().lower()
         allowed = auth.get_viewer_pages(user_row["id"]) if role == "viewer" else []
         user = User(
             id_=user_row["id"],

@@ -19,6 +19,7 @@ PAGE_KEYS = [
     ("consumables", "Consumables"),
     ("maintenance", "Maintenance"),
     ("documents", "Documents"),
+    ("security", "Security"),
     ("help", "Help"),
 ]
 
