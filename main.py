@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import time
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -729,14 +730,33 @@ def _running_on_cloud_run():
     return bool(os.environ.get("K_SERVICE"))
 
 
-def _init_firebase_app():
-    """Initialize Firebase once. Cloud Run: ADC first; else file / JSON env. Returns error text or None."""
+# Env vars that force a JSON key file (disabled keys cause invalid_grant / Invalid JWT).
+_CLOUD_RUN_STRIP_CRED_ENV = (
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "FIREBASE_CREDENTIALS_PATH",
+    "FIREBASE_CREDENTIALS_JSON",
+)
+
+
+@contextmanager
+def _cloud_run_metadata_credentials_env():
+    """On Cloud Run, use the runtime service account (metadata), not mounted JSON keys."""
+    saved = {k: os.environ.pop(k) for k in _CLOUD_RUN_STRIP_CRED_ENV if k in os.environ}
     try:
-        firebase_admin.get_app()
-        return None
-    except ValueError:
+        yield
+    finally:
+        os.environ.update(saved)
+
+
+def _delete_firebase_app():
+    try:
+        firebase_admin.delete_app(firebase_admin.get_app())
+    except (ValueError, AttributeError):
         pass
 
+
+def _init_firebase_app():
+    """Initialize Firebase once. Cloud Run: metadata ADC only. Returns error text or None."""
     project_id = _firebase_project_id()
     init_options = {"projectId": project_id} if project_id else None
 
@@ -744,13 +764,31 @@ def _init_firebase_app():
         cred = credentials.ApplicationDefault()
         firebase_admin.initialize_app(cred, init_options)
 
-    # On Cloud Run, prefer IAM on the runtime service account (not a disabled JSON key).
     if _running_on_cloud_run():
+        if any(os.environ.get(k) for k in _CLOUD_RUN_STRIP_CRED_ENV):
+            app.logger.warning(
+                "Cloud Run: ignoring FIREBASE_CREDENTIALS_JSON / GOOGLE_APPLICATION_CREDENTIALS "
+                "(disabled keys cause Invalid JWT). Remove those secrets from the service."
+            )
+        _delete_firebase_app()
         try:
-            _try_adc()
+            with _cloud_run_metadata_credentials_env():
+                _try_adc()
             return None
         except Exception as e:
-            app.logger.warning("Firebase ADC on Cloud Run failed: %s", e)
+            app.logger.exception("Firebase ADC on Cloud Run failed")
+            return (
+                "Firestore auth failed on Cloud Run. Remove FIREBASE_CREDENTIALS_JSON and "
+                "GOOGLE_APPLICATION_CREDENTIALS from the service, then grant the Cloud Run "
+                "service account role Cloud Datastore User on whatsapp-approval-system. "
+                f"Detail: {e}"
+            )
+
+    try:
+        firebase_admin.get_app()
+        return None
+    except ValueError:
+        pass
 
     json_raw = (os.environ.get("FIREBASE_CREDENTIALS_JSON") or "").strip()
     if json_raw:
@@ -904,6 +942,12 @@ def _fetch_security_od_requests_inner(ist_day, db):
     rows = []
     for _, d, snap_id in buf:
         md_ok = (d.get("md_status") or "").strip().upper() == "APPROVED"
+        distance_km = d.get("distance_km")
+        if distance_km is None and d.get("odo_out") is not None and d.get("odo_in") is not None:
+            try:
+                distance_km = round(float(d["odo_in"]) - float(d["odo_out"]), 2)
+            except (TypeError, ValueError):
+                distance_km = None
         rows.append(
             {
                 "request_id": d.get("request_id") or snap_id,
@@ -914,6 +958,8 @@ def _fetch_security_od_requests_inner(ist_day, db):
                 "employee_name": d.get("employee_name") or "",
                 "department": d.get("department") or "",
                 "reason": d.get("reason") or "",
+                "company_vehicle": d.get("company_vehicle_description") or "",
+                "uses_company_vehicle": _request_uses_company_vehicle(d),
                 "manager": d.get("manager") or "",
                 "manager_status": d.get("manager_status") or "",
                 "md_status": d.get("md_status") or "",
@@ -924,9 +970,62 @@ def _fetch_security_od_requests_inner(ist_day, db):
                 "security_in_at": _format_firestore_time_ist_12h(
                     d.get("security_in_at")
                 ),
+                "odo_out": _format_odo_reading(d.get("odo_out")),
+                "odo_in": _format_odo_reading(d.get("odo_in")),
+                "distance_km": _format_distance_km(distance_km),
             }
         )
     return rows
+
+
+def _format_odo_reading(value):
+    """Display odometer reading from Firestore (number or empty)."""
+    if value is None or value == "":
+        return ""
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if n == int(n):
+        return str(int(n))
+    return f"{n:.1f}"
+
+
+def _format_distance_km(value):
+    if value is None or value == "":
+        return ""
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if n == int(n):
+        return str(int(n))
+    return f"{n:.2f}"
+
+
+def _request_uses_company_vehicle(d: dict) -> bool:
+    """Whether this OD used a company vehicle (ODO required at gate)."""
+    if not d:
+        return False
+    flag = d.get("uses_company_vehicle")
+    if flag is True:
+        return True
+    if flag is False:
+        return False
+    return bool((d.get("company_vehicle_id") or "").strip())
+
+
+def _parse_odo_reading(value):
+    """Validate ODO from API. Returns (float|None, error_message)."""
+    if value is None or (isinstance(value, str) and not str(value).strip()):
+        return None, "ODO meter reading is required"
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None, "Invalid ODO meter reading"
+    if n < 0:
+        return None, "ODO meter reading cannot be negative"
+    return n, None
 
 
 def fetch_security_od_requests(ist_day=None):
@@ -947,16 +1046,20 @@ def fetch_security_od_requests(ist_day=None):
     except Exception as e:
         app.logger.exception("Firestore security OD fetch failed")
         msg = str(e)
-        if "403" in msg or "permission" in msg.lower() or "disabled" in msg.lower():
+        if any(
+            x in msg.lower()
+            for x in ("403", "permission", "disabled", "invalid_grant", "invalid jwt")
+        ):
             msg += (
-                " Grant the Cloud Run service account Cloud Datastore User on "
-                "whatsapp-approval-system and remove disabled FIREBASE_CREDENTIALS_JSON."
+                " Remove FIREBASE_CREDENTIALS_JSON / GOOGLE_APPLICATION_CREDENTIALS from "
+                "Cloud Run and grant the runtime service account Cloud Datastore User on "
+                "whatsapp-approval-system."
             )
         return [], msg
 
 
-def _security_record_od_gate(request_id: str, action: str):
-    """Persist OUT / IN timestamps on the OD request document. Returns (ok, error_message)."""
+def _security_record_od_gate(request_id: str, action: str, odo_reading):
+    """Persist OUT / IN timestamps and ODO on the OD request. Returns (ok, error_message)."""
     db, err = _get_firestore_client()
     if err:
         return False, err
@@ -976,19 +1079,44 @@ def _security_record_od_gate(request_id: str, action: str):
             return False, "Not an OD request"
         if (d.get("md_status") or "").strip().upper() != "APPROVED":
             return False, "OD is not fully approved yet"
+        needs_odo = _request_uses_company_vehicle(d)
+        odo = None
+        if needs_odo:
+            odo, odo_err = _parse_odo_reading(odo_reading)
+            if odo_err:
+                return False, odo_err
         out_at = d.get("security_out_at")
         in_at = d.get("security_in_at")
         now = datetime.now(timezone.utc)
         if action == "out":
             if out_at is not None:
                 return False, "Out time is already recorded"
-            ref.update({"security_out_at": now})
+            update = {"security_out_at": now}
+            if needs_odo:
+                update["odo_out"] = odo
+            ref.update(update)
             return True, None
         if in_at is not None:
             return False, "This visit is already closed"
         if out_at is None:
             return False, "Record OUT before IN"
-        ref.update({"security_in_at": now})
+        update = {"security_in_at": now}
+        if needs_odo:
+            odo_out = d.get("odo_out")
+            if odo_out is not None:
+                try:
+                    odo_out_f = float(odo_out)
+                except (TypeError, ValueError):
+                    odo_out_f = None
+                if odo_out_f is not None and odo < odo_out_f:
+                    return False, "IN reading cannot be less than OUT reading"
+            update["odo_in"] = odo
+            if odo_out is not None:
+                try:
+                    update["distance_km"] = round(odo - float(odo_out), 2)
+                except (TypeError, ValueError):
+                    pass
+        ref.update(update)
         return True, None
     except Exception as e:
         app.logger.exception("security OD gate update failed")
@@ -3566,7 +3694,8 @@ def security_od_gate():
     payload = request.get_json(silent=True) or {}
     request_id = (payload.get("request_id") or "").strip()
     action = (payload.get("action") or "").strip()
-    ok, err = _security_record_od_gate(request_id, action)
+    odo_reading = payload.get("odo_reading")
+    ok, err = _security_record_od_gate(request_id, action, odo_reading)
     if not ok:
         return jsonify({"ok": False, "error": err or "Update failed"}), 400
     return jsonify({"ok": True})
